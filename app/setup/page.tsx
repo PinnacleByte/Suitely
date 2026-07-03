@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 
+const SETUP_ENABLED = process.env.NEXT_PUBLIC_SETUP_ENABLED === 'true'
+
 export default function SetupPage() {
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(false)
@@ -88,6 +90,32 @@ export default function SetupPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  if (!SETUP_ENABLED) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-indigo-950 py-12 px-4 flex items-center">
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="max-w-md mx-auto w-full bg-gray-900 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8 text-center"
+        >
+          <h1 className="text-2xl font-bold text-white mb-4 flex items-center justify-center gap-2">
+            <span>🛎️</span> Suitely Setup
+          </h1>
+          <p className="text-gray-400 mb-6">
+            Self-service setup is currently unavailable. If you&apos;re interested in Suitely for your hotel, please contact us to get your account provisioned.
+          </p>
+          <a
+            href="/login"
+            className="inline-block px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
+          >
+            Back to Sign In
+          </a>
+        </motion.div>
+      </div>
+    )
   }
 
   return (

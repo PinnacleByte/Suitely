@@ -1,8 +1,11 @@
 'use client'
 
-import { motion } from 'framer-motion'
+import { useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
 
 export default function Home() {
+  const [showSetupMessage, setShowSetupMessage] = useState(false)
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-indigo-950">
       <motion.div
@@ -55,15 +58,30 @@ export default function Home() {
             >
               Sign In
             </motion.a>
-            <motion.a
+            <motion.button
               whileHover={{ scale: 1.03 }}
               whileTap={{ scale: 0.97 }}
-              href="/setup"
+              onClick={() => setShowSetupMessage(true)}
               className="px-6 py-3 bg-gray-800 text-gray-200 rounded-lg font-semibold hover:bg-gray-700 transition"
             >
               First Time Setup
-            </motion.a>
+            </motion.button>
           </div>
+
+          <AnimatePresence>
+            {showSetupMessage && (
+              <motion.div
+                initial={{ opacity: 0, height: 0, marginTop: 0 }}
+                animate={{ opacity: 1, height: 'auto', marginTop: 16 }}
+                exit={{ opacity: 0, height: 0, marginTop: 0 }}
+                className="overflow-hidden"
+              >
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 text-yellow-200/80">
+                  Whoa there, early bird. This suite doesn&apos;t check itself in — self-service setup is checked out until further notice. Reach out to support and we&apos;ll have your room key ready.
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.div>
     </div>

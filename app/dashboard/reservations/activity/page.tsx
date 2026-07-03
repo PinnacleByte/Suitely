@@ -88,9 +88,9 @@ export default function ReservationActivityPage() {
 
   return (
     <main className="max-w-7xl mx-auto px-4 py-12">
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex flex-col gap-3 mb-8 sm:flex-row sm:justify-between sm:items-start">
         <div>
-          <h1 className="text-4xl font-bold text-white">Reservation Activity Log</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-white">Reservation Activity Log</h1>
           <p className="text-gray-400 mt-2">
             Every reservation created, modified, or deleted, and every folio charge added or
             removed — including who did it and when. Deleted reservations remain visible here
@@ -133,13 +133,13 @@ export default function ReservationActivityPage() {
               </div>
             )}
 
-            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-hidden">
+            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
               {displayedLogs.length === 0 ? (
                 <div className="p-8 text-center text-gray-400">
                   {selectedDate ? 'No activity recorded on this day' : 'No activity recorded yet'}
                 </div>
               ) : (
-                <table className="w-full">
+                <table className="w-full min-w-160">
                   <thead className="bg-gray-800">
                     <tr>
                       <th className="px-6 py-3 text-left text-gray-300 font-semibold">Action</th>

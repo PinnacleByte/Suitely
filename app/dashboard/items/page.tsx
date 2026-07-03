@@ -100,7 +100,7 @@ export default function ItemsPage() {
     <main className="max-w-4xl mx-auto px-4 py-12">
       <div className="flex justify-between items-start mb-8">
         <div>
-          <h1 className="text-4xl font-bold text-gray-100">Items</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-100">Items</h1>
           <p className="text-gray-400 mt-2">
             Priced extras (minibar, amenities, kits) staff can add to a guest&apos;s folio.
           </p>
@@ -178,7 +178,7 @@ export default function ItemsPage() {
         )}
       </AnimatePresence>
 
-      <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-hidden">
+      <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
         {loading ? (
           <div className="p-8 text-center text-gray-400">Loading...</div>
         ) : items.length === 0 ? (

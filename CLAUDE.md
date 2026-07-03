@@ -96,6 +96,17 @@ Both directions are full multi-step wizard dialogs, not one-click actions — ev
 ### Navigation
 Top nav (`components/DashboardNav.tsx`): **Dashboard · Reservations · Rooms · Housekeeping · Settings**, plus the `QuickCheckInOut` dropdowns and the profile/logout section. `/dashboard/settings` is a hub page linking to **Items**, **Activity Log**, and **Staff** — these were top-level nav tabs originally, moved out to declutter the primary nav (per explicit request). Items and Staff pages each have a "← Back to Settings" link; Activity Log kept its pre-existing "← Back to Reservations" link since that's still its more useful context.
 
+**Mobile nav**: below the `md` breakpoint (768px) the inline links + user/logout collapse into a hamburger drawer (`NAV_LINKS` array drives both the desktop row and the drawer so they can't drift), while `QuickCheckInOut` stays in the top bar — Check In/Out are the highest-frequency front-desk actions and their count badges need to stay one tap away.
+
+### Responsive / Mobile
+The whole dashboard is expected to hold the viewport on any device (verified down to phone widths). Conventions used throughout, worth matching on new pages:
+- **Data tables** (`reservations`, `activity`, `staff`, `items`) live in an `overflow-x-auto` card with a `min-w-*` on the `<table>` — they scroll horizontally within their card rather than pushing the page wider than the screen. Don't wrap a wide table in `overflow-hidden` (clips the Actions column instead of letting it scroll).
+- **Page/section header toolbars** that pair a heading with an action button use `flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center` so the button drops below the title on mobile instead of colliding with it.
+- **Page titles** are `text-3xl sm:text-4xl` (not a bare `text-4xl`); the dashboard's "Welcome to {org}" also carries `wrap-break-word` for long single-token org names.
+- **Grids/forms** use `md:grid-cols-*` (single column on mobile) — already the norm.
+- **Modals** (`CheckInDialog`/`CheckoutDialog`) are `w-full max-w-lg` on a `px-4` backdrop with `max-h-[85vh] overflow-y-auto`; the `QuickCheckInOut` dropdowns are `w-80 max-w-[calc(100vw-1.5rem)]` so they never exceed a narrow viewport.
+- One known rough edge (see Phase 2.5): expanding Folio/Guests/History on the Reservations table on a phone renders the panel inside the `min-w-180` table row, so it scrolls horizontally with the table.
+
 ## Key Files
 
 ### Database
@@ -253,6 +264,7 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 - [ ] Role-based RLS enforcement
 - [ ] Password-reset flow
 - [ ] Reservation search/filter
+- [ ] Reservations mobile card layout — below `md`, render the reservations list (and its Folio/Guests/History expanders) as stacked cards instead of the horizontally-scrolling table, so phone users don't side-scroll a 7-column table + wide expand panels
 
 ### Phase 3: Public Features
 - [ ] Guest booking portal
@@ -323,5 +335,5 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 
 ---
 
-**Last Updated**: 2026-07-02 (content), session work through occupancy/guest-ID capture
+**Last Updated**: 2026-07-03 (content), session work through mobile/responsive pass (hamburger nav + viewport-safe tables/headers/modals)
 **Maintained By**: Primary developer + 1 co-developer

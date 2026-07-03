@@ -228,7 +228,7 @@ export default function RoomsPage() {
 
   return (
       <main className="max-w-7xl mx-auto px-4 py-12">
-        <h1 className="text-4xl font-bold text-gray-100 mb-8">Room Management</h1>
+        <h1 className="text-3xl sm:text-4xl font-bold text-gray-100 mb-8">Room Management</h1>
 
         {error && (
           <div className="mb-6 px-4 py-3 rounded-lg bg-red-500/10 text-red-300 border border-red-500/30">
@@ -238,7 +238,7 @@ export default function RoomsPage() {
 
         {/* Room Types Section */}
         <div className="mb-12">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Room Types</h2>
             <button
               onClick={() => {
@@ -411,7 +411,7 @@ export default function RoomsPage() {
 
         {/* Rooms Section */}
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Rooms</h2>
             <button
               onClick={() => {

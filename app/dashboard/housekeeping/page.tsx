@@ -197,7 +197,7 @@ export default function HousekeepingPage() {
 
   return (
     <main className="max-w-7xl mx-auto px-4 py-12">
-      <h1 className="text-4xl font-bold text-gray-100 mb-2">Housekeeping &amp; Maintenance</h1>
+      <h1 className="text-3xl sm:text-4xl font-bold text-gray-100 mb-2">Housekeeping &amp; Maintenance</h1>
       <p className="text-gray-400 mb-8">
         Turn rooms around after checkout and track maintenance issues.
       </p>

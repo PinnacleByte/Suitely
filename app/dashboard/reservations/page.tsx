@@ -438,8 +438,8 @@ export default function ReservationsPage() {
 
   return (
       <main className="max-w-7xl mx-auto px-4 py-12">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-100">Reservations</h1>
+        <div className="flex flex-col gap-4 mb-8 sm:flex-row sm:justify-between sm:items-center">
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-100">Reservations</h1>
           <div className="flex gap-3 items-center">
             <a
               href="/dashboard/reservations/activity"
@@ -994,7 +994,7 @@ export default function ReservationsPage() {
           )}
         </AnimatePresence>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-hidden">
+        <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
           {loading ? (
             <div className="p-8 text-center text-gray-400">Loading...</div>
           ) : reservations.length === 0 ? (
@@ -1002,7 +1002,7 @@ export default function ReservationsPage() {
               No reservations yet
             </div>
           ) : (
-            <table className="w-full">
+            <table className="w-full min-w-180">
               <thead className="bg-gray-800">
                 <tr>
                   <th className="px-6 py-3 text-left text-gray-300 font-semibold">

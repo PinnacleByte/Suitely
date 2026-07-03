@@ -15,7 +15,7 @@ export default function Home() {
         className="max-w-4xl mx-auto px-4 py-16"
       >
         <div className="bg-gray-900/80 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8 backdrop-blur">
-          <h1 className="text-4xl font-bold text-white mb-4 flex items-center gap-3">
+          <h1 className="text-3xl sm:text-4xl font-bold text-white mb-4 flex items-center gap-3">
             <span>🛎️</span> Suitely
           </h1>
           <p className="text-xl text-gray-400 mb-8">

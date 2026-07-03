@@ -95,7 +95,7 @@ export default function QuickCheckInOut() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.15 }}
-                className="absolute right-0 mt-2 w-80 bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-30 p-3"
+                className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-30 p-3"
               >
                 <input
                   type="text"
@@ -165,7 +165,7 @@ export default function QuickCheckInOut() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.15 }}
-                className="absolute right-0 mt-2 w-80 bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-30 p-3"
+                className="absolute right-0 mt-2 w-80 max-w-[calc(100vw-1.5rem)] bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-30 p-3"
               >
                 <input
                   type="text"

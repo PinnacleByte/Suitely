@@ -133,7 +133,7 @@ export default function CheckoutDialog({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.2 }}
-        className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-lg shadow-xl p-6"
+        className="w-full max-w-lg bg-gray-900 border border-gray-800 rounded-lg shadow-xl p-6 max-h-[85vh] overflow-y-auto"
       >
         <h2 className="text-xl font-bold text-gray-100 mb-1">Check Out</h2>
         <p className="text-sm text-gray-400 mb-5">

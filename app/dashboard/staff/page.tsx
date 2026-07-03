@@ -140,8 +140,8 @@ export default function StaffPage() {
 
   return (
       <main className="max-w-7xl mx-auto px-4 py-12">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-100">Staff Management</h1>
+        <div className="flex flex-wrap gap-3 justify-between items-center mb-8">
+          <h1 className="text-3xl sm:text-4xl font-bold text-gray-100">Staff Management</h1>
           <a
             href="/dashboard/settings"
             className="text-sm font-semibold text-indigo-400 hover:text-indigo-300"
@@ -152,7 +152,7 @@ export default function StaffPage() {
 
         {/* Staff Section */}
         <div className="mb-12">
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Staff Members</h2>
             <button
               onClick={() => setShowStaffForm(!showStaffForm)}
@@ -253,8 +253,8 @@ export default function StaffPage() {
               No staff members yet
             </div>
           ) : (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-hidden">
-              <table className="w-full">
+            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
+              <table className="w-full min-w-140">
                 <thead className="bg-gray-800">
                   <tr>
                     <th className="px-6 py-3 text-left text-gray-300 font-semibold">
@@ -300,7 +300,7 @@ export default function StaffPage() {
 
         {/* Schedules Section */}
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Schedules</h2>
             <button
               onClick={() => setShowScheduleForm(!showScheduleForm)}
@@ -444,8 +444,8 @@ export default function StaffPage() {
               No schedules yet
             </div>
           ) : (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-hidden">
-              <table className="w-full">
+            <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
+              <table className="w-full min-w-140">
                 <thead className="bg-gray-800">
                   <tr>
                     <th className="px-6 py-3 text-left text-gray-300 font-semibold">

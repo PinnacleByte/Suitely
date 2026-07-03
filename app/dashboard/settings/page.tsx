@@ -27,7 +27,7 @@ const SETTINGS_LINKS = [
 export default function SettingsPage() {
   return (
     <main className="max-w-5xl mx-auto px-4 py-12">
-      <h1 className="text-4xl font-bold text-gray-100 mb-2">Settings</h1>
+      <h1 className="text-3xl sm:text-4xl font-bold text-gray-100 mb-2">Settings</h1>
       <p className="text-gray-400 mb-8">Less frequently used management and admin tools.</p>
 
       <div className="grid md:grid-cols-3 gap-6">

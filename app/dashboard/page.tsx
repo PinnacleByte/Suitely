@@ -104,7 +104,7 @@ export default function DashboardPage() {
   return (
       <main className="max-w-7xl mx-auto px-4 py-12">
         <div className="mb-8">
-          <h1 className="text-4xl font-bold text-white">
+          <h1 className="text-3xl sm:text-4xl font-bold text-white wrap-break-word">
             Welcome to {org?.name || 'Suitely'}
           </h1>
           <p className="text-gray-400 mt-2">

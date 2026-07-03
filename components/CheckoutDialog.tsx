@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Reservation, Item } from '@/lib/types'
 import { todayIST } from '@/lib/formatDate'
+import { formatMoney } from '@/lib/currency'
 import ItemGrid from '@/components/ItemGrid'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
@@ -13,7 +14,16 @@ const nightsBetween = (start: string, end: string) =>
 
 const STEP_LABELS = ['Departure', 'Items', 'Review']
 
-const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toFixed(2)}` : `$${n.toFixed(2)}`)
+const PAYMENT_METHODS = ['cash', 'card', 'upi', 'bank_transfer', 'other'] as const
+const METHOD_LABEL: Record<(typeof PAYMENT_METHODS)[number], string> = {
+  cash: 'Cash',
+  card: 'Card',
+  upi: 'UPI',
+  bank_transfer: 'Bank transfer',
+  other: 'Other',
+}
+
+const money = formatMoney
 
 // Confirms a guest's actual departure date, lets staff add any extra items
 // used during the stay, then checks them out in one step. Capturing the
@@ -37,6 +47,9 @@ export default function CheckoutDialog({
   const [checkoutDate, setCheckoutDate] = useState(todayIST())
   const [items, setItems] = useState<Item[]>([])
   const [quantities, setQuantities] = useState<Record<string, number>>({})
+  const [paymentAmount, setPaymentAmount] = useState('')
+  const [paymentMethod, setPaymentMethod] =
+    useState<(typeof PAYMENT_METHODS)[number]>('cash')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -120,6 +133,18 @@ export default function CheckoutDialog({
 
       if (chargeRows.length > 0) {
         await supabase.from('reservation_charges').insert(chargeRows)
+      }
+
+      const payment = parseFloat(paymentAmount)
+      if (!Number.isNaN(payment) && payment !== 0) {
+        await supabase.from('payments').insert([
+          {
+            org_id: orgId,
+            reservation_id: reservation.id,
+            amount: payment,
+            method: paymentMethod,
+          },
+        ])
       }
     }
 
@@ -268,6 +293,50 @@ export default function CheckoutDialog({
                 <div className="flex justify-between pt-2 border-t border-gray-800">
                   <span className="font-bold text-gray-100">Total</span>
                   <span className="font-bold text-indigo-400">{money(grandTotal)}</span>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-3 border-t border-gray-800">
+                <p className="text-xs text-gray-400 mb-2">
+                  Record a payment now (optional). Leave blank to settle later from the Folio. This
+                  reflects only this stay&apos;s room + items above — check the Folio for the full
+                  balance if there are earlier charges or deposits.
+                </p>
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="block text-gray-400 text-xs font-semibold mb-1">Amount</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      placeholder={String(grandTotal)}
+                      className="w-32 px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-xs font-semibold mb-1">Method</label>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) =>
+                        setPaymentMethod(e.target.value as (typeof PAYMENT_METHODS)[number])
+                      }
+                      className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm"
+                    >
+                      {PAYMENT_METHODS.map((m) => (
+                        <option key={m} value={m}>
+                          {METHOD_LABEL[m]}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentAmount(String(grandTotal))}
+                    className="px-3 py-1.5 text-xs font-semibold text-indigo-400 hover:text-indigo-300"
+                  >
+                    Pay full total
+                  </button>
                 </div>
               </div>
             </motion.div>

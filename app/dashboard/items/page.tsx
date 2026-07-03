@@ -4,11 +4,14 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Item } from '@/lib/types'
+import { formatMoney } from '@/lib/currency'
+import { useConfirm } from '@/lib/ConfirmDialog'
 
 type ItemForm = { name: string; price: string }
 const emptyForm: ItemForm = { name: '', price: '' }
 
 export default function ItemsPage() {
+  const { confirm } = useConfirm()
   const [items, setItems] = useState<Item[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -84,8 +87,13 @@ export default function ItemsPage() {
   }
 
   const handleDelete = async (item: Item) => {
-    if (!confirm(`Delete "${item.name}"? This won't affect charges already added to a folio.`))
-      return
+    const ok = await confirm({
+      title: `Delete "${item.name}"?`,
+      message: "This won't affect charges already added to a folio.",
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
 
     const { error: deleteError } = await supabase.from('items').delete().eq('id', item.id)
 
@@ -198,7 +206,7 @@ export default function ItemsPage() {
               {items.map((item) => (
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-800">
                   <td className="px-6 py-3 text-gray-100 font-semibold">{item.name}</td>
-                  <td className="px-6 py-3 text-gray-100">${Number(item.price).toFixed(2)}</td>
+                  <td className="px-6 py-3 text-gray-100">{formatMoney(Number(item.price))}</td>
                   <td className="px-6 py-3">
                     <div className="flex gap-3 text-sm font-semibold">
                       <button

@@ -2,9 +2,12 @@
 
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
+import { CalendarDays, BedDouble, Sparkles, ShoppingBag, Users, Loader2 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { todayIST } from '@/lib/formatDate'
-import { Organization, Room, Reservation, StaffSchedule, User } from '@/lib/types'
+import { formatMoney } from '@/lib/currency'
+import { Organization, Room, Reservation, StaffSchedule, User, ReservationCharge, Payment } from '@/lib/types'
 import CheckInDialog from '@/components/CheckInDialog'
 import CheckoutDialog from '@/components/CheckoutDialog'
 
@@ -24,14 +27,23 @@ const ROOM_STATUS_META: Record<Room['status'], { label: string; color: string }>
   maintenance: { label: 'Maintenance', color: 'text-red-400' },
 }
 
-// Matches the plain "$" prefix used elsewhere in the app (Reservations, Rooms)
-// rather than assuming a currency, since the app doesn't have currency settings yet.
-const currency = (n: number) => `$${n.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+// Whole-currency figures (no cents) in the org's configured currency.
+const currency = (n: number) => formatMoney(n, { decimals: 0 })
+
+const QUICK_ACTIONS: { href: string; label: string; icon: LucideIcon; color: string }[] = [
+  { href: '/dashboard/reservations', label: 'Manage Reservations', icon: CalendarDays, color: 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-300' },
+  { href: '/dashboard/rooms', label: 'Manage Rooms', icon: BedDouble, color: 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-300' },
+  { href: '/dashboard/housekeeping', label: 'Housekeeping', icon: Sparkles, color: 'bg-yellow-500/10 hover:bg-yellow-500/20 text-yellow-300' },
+  { href: '/dashboard/items', label: 'Manage Items', icon: ShoppingBag, color: 'bg-teal-500/10 hover:bg-teal-500/20 text-teal-300' },
+  { href: '/dashboard/staff', label: 'Manage Staff', icon: Users, color: 'bg-green-500/10 hover:bg-green-500/20 text-green-300' },
+]
 
 export default function DashboardPage() {
   const [org, setOrg] = useState<Organization | null>(null)
   const [rooms, setRooms] = useState<Room[]>([])
   const [reservations, setReservations] = useState<Reservation[]>([])
+  const [charges, setCharges] = useState<ReservationCharge[]>([])
+  const [payments, setPayments] = useState<Payment[]>([])
   const [schedules, setSchedules] = useState<StaffSchedule[]>([])
   const [staff, setStaff] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
@@ -51,17 +63,22 @@ export default function DashboardPage() {
         return
       }
 
-      const [orgData, roomsData, reservationsData, schedulesData, staffData] = await Promise.all([
-        supabase.from('organizations').select('*').eq('id', orgId).single(),
-        supabase.from('rooms').select('*').eq('org_id', orgId),
-        supabase.from('reservations').select('*').eq('org_id', orgId),
-        supabase.from('staff_schedules').select('*').eq('org_id', orgId),
-        supabase.from('users').select('*').eq('org_id', orgId),
-      ])
+      const [orgData, roomsData, reservationsData, chargesData, paymentsData, schedulesData, staffData] =
+        await Promise.all([
+          supabase.from('organizations').select('*').eq('id', orgId).single(),
+          supabase.from('rooms').select('*').eq('org_id', orgId),
+          supabase.from('reservations').select('*').eq('org_id', orgId),
+          supabase.from('reservation_charges').select('*').eq('org_id', orgId),
+          supabase.from('payments').select('*').eq('org_id', orgId),
+          supabase.from('staff_schedules').select('*').eq('org_id', orgId),
+          supabase.from('users').select('*').eq('org_id', orgId),
+        ])
 
       if (orgData.data) setOrg(orgData.data as Organization)
       setRooms((roomsData.data as Room[]) || [])
       setReservations((reservationsData.data as Reservation[]) || [])
+      setCharges((chargesData.data as ReservationCharge[]) || [])
+      setPayments((paymentsData.data as Payment[]) || [])
       setSchedules((schedulesData.data as StaffSchedule[]) || [])
       setStaff((staffData.data as User[]) || [])
     } catch (err) {
@@ -88,13 +105,36 @@ export default function DashboardPage() {
   const arrivalsToday = activeReservations.filter((r) => r.check_in_date === today)
   const departuresToday = activeReservations.filter((r) => r.check_out_date === today)
 
+  // Folio charges/payments summed per reservation, so the dashboard's money
+  // figures match a reservation's actual folio (room + charges − payments)
+  // rather than room price alone.
+  const sumByReservation = (rows: { reservation_id: string; amount: number }[]) =>
+    rows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.reservation_id] = (acc[row.reservation_id] || 0) + Number(row.amount)
+      return acc
+    }, {})
+  const chargesByReservation = sumByReservation(charges)
+  const paymentsByReservation = sumByReservation(payments)
+  const folioTotal = (r: Reservation) =>
+    Number(r.total_price) + (chargesByReservation[r.id] || 0)
+
+  // Revenue now includes folio charges (minibar, surcharges, discounts), not
+  // just room price — closes the long-standing gap where extras were ignored.
   const revenueThisMonth = activeReservations
     .filter((r) => r.check_in_date.slice(0, 7) === thisMonth)
-    .reduce((sum, r) => sum + Number(r.total_price), 0)
+    .reduce((sum, r) => sum + folioTotal(r), 0)
 
   const upcomingConfirmedRevenue = reservations
     .filter((r) => r.status === 'confirmed' && r.check_in_date > today)
-    .reduce((sum, r) => sum + Number(r.total_price), 0)
+    .reduce((sum, r) => sum + folioTotal(r), 0)
+
+  // Outstanding = money still owed across active reservations: folio total
+  // minus payments, counting only reservations with a positive balance (an
+  // overpaid/deposit-heavy booking is a credit, not a receivable).
+  const reservationsOwing = activeReservations
+    .map((r) => folioTotal(r) - (paymentsByReservation[r.id] || 0))
+    .filter((balance) => balance > 0.005)
+  const outstandingBalance = reservationsOwing.reduce((sum, balance) => sum + balance, 0)
 
   const staffOnShiftToday = schedules
     .filter((s) => s.shift_date === today)
@@ -120,7 +160,7 @@ export default function DashboardPage() {
 
         {loading ? (
           <div className="text-center py-12">
-            <div className="inline-block animate-spin">⏳</div>
+            <Loader2 className="w-6 h-6 mx-auto animate-spin text-gray-500" />
             <p className="text-gray-400 mt-2">Loading...</p>
           </div>
         ) : (
@@ -213,7 +253,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Revenue snapshot */}
-            <div className="grid md:grid-cols-2 gap-6 mb-10">
+            <div className="grid md:grid-cols-3 gap-6 mb-10">
               <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-6">
                 <h3 className="text-gray-400 font-semibold text-sm mb-2">
                   Revenue This Month
@@ -222,7 +262,7 @@ export default function DashboardPage() {
                   {currency(revenueThisMonth)}
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
-                  From confirmed, checked-in, and checked-out stays starting this month
+                  Room + folio charges for stays starting this month (confirmed, checked-in, checked-out)
                 </p>
               </div>
               <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-6">
@@ -234,6 +274,25 @@ export default function DashboardPage() {
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
                   From confirmed future bookings not yet checked in
+                </p>
+              </div>
+              <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-6">
+                <h3 className="text-gray-400 font-semibold text-sm mb-2">
+                  Outstanding Balance
+                </h3>
+                <p
+                  className={`text-3xl font-bold ${
+                    outstandingBalance > 0.005 ? 'text-amber-400' : 'text-emerald-400'
+                  }`}
+                >
+                  {currency(outstandingBalance)}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  {reservationsOwing.length > 0
+                    ? `Unpaid across ${reservationsOwing.length} active reservation${
+                        reservationsOwing.length === 1 ? '' : 's'
+                      } (room + folio − payments)`
+                    : 'All active reservations are fully settled'}
                 </p>
               </div>
             </div>
@@ -265,41 +324,16 @@ export default function DashboardPage() {
                   Quick Actions
                 </h2>
                 <div className="space-y-3">
-                  <motion.a
-                    whileHover={{ x: 2 }}
-                    href="/dashboard/reservations"
-                    className="block p-4 bg-blue-500/10 hover:bg-blue-500/20 rounded-lg text-blue-300 font-semibold transition"
-                  >
-                    📅 Manage Reservations
-                  </motion.a>
-                  <motion.a
-                    whileHover={{ x: 2 }}
-                    href="/dashboard/rooms"
-                    className="block p-4 bg-purple-500/10 hover:bg-purple-500/20 rounded-lg text-purple-300 font-semibold transition"
-                  >
-                    🏠 Manage Rooms
-                  </motion.a>
-                  <motion.a
-                    whileHover={{ x: 2 }}
-                    href="/dashboard/housekeeping"
-                    className="block p-4 bg-yellow-500/10 hover:bg-yellow-500/20 rounded-lg text-yellow-300 font-semibold transition"
-                  >
-                    🧹 Housekeeping
-                  </motion.a>
-                  <motion.a
-                    whileHover={{ x: 2 }}
-                    href="/dashboard/items"
-                    className="block p-4 bg-teal-500/10 hover:bg-teal-500/20 rounded-lg text-teal-300 font-semibold transition"
-                  >
-                    🧴 Manage Items
-                  </motion.a>
-                  <motion.a
-                    whileHover={{ x: 2 }}
-                    href="/dashboard/staff"
-                    className="block p-4 bg-green-500/10 hover:bg-green-500/20 rounded-lg text-green-300 font-semibold transition"
-                  >
-                    👥 Manage Staff
-                  </motion.a>
+                  {QUICK_ACTIONS.map(({ href, label, icon: Icon, color }) => (
+                    <motion.a
+                      key={href}
+                      whileHover={{ x: 2 }}
+                      href={href}
+                      className={`flex items-center gap-3 p-4 rounded-lg font-semibold transition ${color}`}
+                    >
+                      <Icon className="w-5 h-5" /> {label}
+                    </motion.a>
+                  ))}
                 </div>
               </div>
             </div>

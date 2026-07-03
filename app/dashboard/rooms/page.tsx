@@ -5,6 +5,8 @@ import Link from 'next/link'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Room, RoomType, MaintenanceLog } from '@/lib/types'
+import { formatMoney } from '@/lib/currency'
+import { useConfirm } from '@/lib/ConfirmDialog'
 
 const STATUS_FILTERS: Array<'all' | Room['status']> = [
   'all',
@@ -18,6 +20,7 @@ const sortByRoomNumber = (a: Room, b: Room) =>
   a.room_number.localeCompare(b.room_number, undefined, { numeric: true, sensitivity: 'base' })
 
 export default function RoomsPage() {
+  const { confirm } = useConfirm()
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
   const [maintenanceLogs, setMaintenanceLogs] = useState<MaintenanceLog[]>([])
@@ -126,12 +129,18 @@ export default function RoomsPage() {
 
   const handleDeleteType = async (type: RoomType) => {
     const roomsOfType = rooms.filter((r) => r.room_type_id === type.id)
-    const confirmMessage =
+    const message =
       roomsOfType.length > 0
-        ? `Delete "${type.name}"? This will also delete ${roomsOfType.length} room(s) of this type and any of their reservations.`
-        : `Delete "${type.name}"?`
+        ? `This will also delete ${roomsOfType.length} room(s) of this type and any of their reservations.`
+        : 'This room type will be permanently removed.'
 
-    if (!confirm(confirmMessage)) return
+    const ok = await confirm({
+      title: `Delete "${type.name}"?`,
+      message,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
 
     setError('')
     const { error: deleteError } = await supabase
@@ -190,12 +199,13 @@ export default function RoomsPage() {
   }
 
   const handleDeleteRoom = async (room: Room) => {
-    if (
-      !confirm(
-        `Delete room ${room.room_number}? This will also delete any reservations for this room.`
-      )
-    )
-      return
+    const ok = await confirm({
+      title: `Delete room ${room.room_number}?`,
+      message: 'This will also delete any reservations for this room.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
 
     setError('')
     const { error: deleteError } = await supabase
@@ -394,13 +404,13 @@ export default function RoomsPage() {
                     <div className="text-right">
                       <p className="text-sm text-gray-400">Base Price</p>
                       <p className="text-lg font-bold text-indigo-400">
-                        ${type.base_price}
+                        {formatMoney(Number(type.base_price))}
                       </p>
                     </div>
                   </div>
                   {Number(type.extra_guest_fee) > 0 && (
                     <p className="text-xs text-gray-500 mt-2">
-                      +${Number(type.extra_guest_fee).toFixed(2)}/night per guest over capacity
+                      +{formatMoney(Number(type.extra_guest_fee))}/night per guest over capacity
                     </p>
                   )}
                 </motion.div>

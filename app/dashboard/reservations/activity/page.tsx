@@ -17,6 +17,10 @@ const SUMMARY_BADGE: Record<string, string> = {
   Edited: 'bg-gray-500/20 text-gray-300',
   'Charge Added': 'bg-purple-500/20 text-purple-300',
   'Charge Removed': 'bg-orange-500/20 text-orange-300',
+  'Payment Received': 'bg-emerald-500/20 text-emerald-300',
+  'Payment Removed': 'bg-orange-500/20 text-orange-300',
+  'Refund Issued': 'bg-amber-500/20 text-amber-300',
+  'Refund Removed': 'bg-orange-500/20 text-orange-300',
 }
 const DEFAULT_BADGE = 'bg-gray-500/20 text-gray-300'
 
@@ -52,7 +56,7 @@ export default function ReservationActivityPage() {
         .from('audit_logs')
         .select('*')
         .eq('org_id', orgId)
-        .in('entity_type', ['reservation', 'reservation_charge'])
+        .in('entity_type', ['reservation', 'reservation_charge', 'payment'])
         .order('created_at', { ascending: false })
 
       setLogs((data as AuditLog[]) || [])
@@ -92,9 +96,9 @@ export default function ReservationActivityPage() {
         <div>
           <h1 className="text-3xl sm:text-4xl font-bold text-white">Reservation Activity Log</h1>
           <p className="text-gray-400 mt-2">
-            Every reservation created, modified, or deleted, and every folio charge added or
-            removed — including who did it and when. Deleted reservations remain visible here
-            even though the reservation itself is gone.
+            Every reservation created, modified, or deleted, every folio charge added or removed,
+            and every payment or refund — including who did it and when. Deleted reservations
+            remain visible here even though the reservation itself is gone.
           </p>
         </div>
         <a

@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
+import { ConciergeBell } from 'lucide-react'
 import { useAuth } from '@/lib/AuthContext'
 import QuickCheckInOut from '@/components/QuickCheckInOut'
 
@@ -38,7 +39,7 @@ export default function DashboardNav() {
           href="/dashboard"
           className="text-xl font-bold text-white flex items-center gap-2 hover:text-indigo-400 transition"
         >
-          <span>🛎️</span> Suitely
+          <ConciergeBell className="w-5 h-5 text-indigo-400" /> Suitely
         </Link>
 
         <div className="flex gap-1 items-center">

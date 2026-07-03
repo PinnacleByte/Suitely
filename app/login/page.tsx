@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
+import { ConciergeBell } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 
 export default function LoginPage() {
@@ -40,7 +41,7 @@ export default function LoginPage() {
         className="max-w-md mx-auto w-full bg-gray-900 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8"
       >
         <h1 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
-          <span>🛎️</span> Sign in to Suitely
+          <ConciergeBell className="w-6 h-6 text-indigo-400" /> Sign in to Suitely
         </h1>
         <p className="text-gray-400 mb-8">
           For hotel admins and staff. New hotel?{' '}

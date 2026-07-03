@@ -2,7 +2,9 @@
 
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { ConciergeBell, Check } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { CURRENCIES, CurrencyCode, DEFAULT_CURRENCY } from '@/lib/currency'
 
 const SETUP_ENABLED = process.env.NEXT_PUBLIC_SETUP_ENABLED === 'true'
 
@@ -11,6 +13,7 @@ export default function SetupPage() {
   const [loading, setLoading] = useState(false)
   const [orgName, setOrgName] = useState('')
   const [orgSlug, setOrgSlug] = useState('')
+  const [orgCurrency, setOrgCurrency] = useState<CurrencyCode>(DEFAULT_CURRENCY)
   const [managerName, setManagerName] = useState('')
   const [managerEmail, setManagerEmail] = useState('')
   const [managerPassword, setManagerPassword] = useState('')
@@ -64,7 +67,7 @@ export default function SetupPage() {
     try {
       const { data, error: orgError } = await supabase
         .from('organizations')
-        .insert([{ name: orgName, slug: orgSlug }])
+        .insert([{ name: orgName, slug: orgSlug, currency: orgCurrency }])
         .select()
 
       if (orgError) throw orgError
@@ -72,6 +75,7 @@ export default function SetupPage() {
 
       const orgId = data[0].id
       localStorage.setItem('orgId', orgId)
+      localStorage.setItem('currency', orgCurrency)
 
       const { error: userError } = await supabase.from('users').insert([
         {
@@ -102,7 +106,7 @@ export default function SetupPage() {
           className="max-w-md mx-auto w-full bg-gray-900 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8 text-center"
         >
           <h1 className="text-2xl font-bold text-white mb-4 flex items-center justify-center gap-2">
-            <span>🛎️</span> Suitely Setup
+            <ConciergeBell className="w-6 h-6 text-indigo-400" /> Suitely Setup
           </h1>
           <p className="text-gray-400 mb-6">
             Self-service setup is currently unavailable. If you&apos;re interested in Suitely for your hotel, please contact us to get your account provisioned.
@@ -127,7 +131,7 @@ export default function SetupPage() {
         className="max-w-md mx-auto w-full bg-gray-900 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8"
       >
         <h1 className="text-2xl font-bold text-white mb-8 flex items-center gap-2">
-          <span>🛎️</span> Suitely Setup
+          <ConciergeBell className="w-6 h-6 text-indigo-400" /> Suitely Setup
         </h1>
 
         {success ? (
@@ -136,8 +140,8 @@ export default function SetupPage() {
             animate={{ opacity: 1, scale: 1 }}
             className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 mb-6"
           >
-            <h2 className="text-lg font-semibold text-green-300 mb-2">
-              ✓ Setup Complete!
+            <h2 className="text-lg font-semibold text-green-300 mb-2 flex items-center gap-2">
+              <Check className="w-5 h-5" /> Setup Complete!
             </h2>
             <p className="text-green-200/80 mb-4">
               Your hotel management system is ready to use.
@@ -265,6 +269,25 @@ export default function SetupPage() {
                     />
                     <p className="text-sm text-gray-500 mt-1">
                       URL-friendly name (auto-generated from hotel name). Example: grand-hotel
+                    </p>
+                  </div>
+                  <div className="mb-6">
+                    <label className="block text-gray-300 font-semibold mb-2">
+                      Currency
+                    </label>
+                    <select
+                      value={orgCurrency}
+                      onChange={(e) => setOrgCurrency(e.target.value as CurrencyCode)}
+                      className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-100"
+                    >
+                      {(Object.keys(CURRENCIES) as CurrencyCode[]).map((code) => (
+                        <option key={code} value={code}>
+                          {CURRENCIES[code].label}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-sm text-gray-500 mt-1">
+                      The currency all your prices will display in. You can change this later in Settings.
                     </p>
                   </div>
                   <motion.button

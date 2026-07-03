@@ -5,6 +5,8 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Reservation, Room, RoomType, AuditLog } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
+import { formatMoney } from '@/lib/currency'
+import { useConfirm } from '@/lib/ConfirmDialog'
 import ReservationFolio from '@/components/ReservationFolio'
 import ReservationGuests from '@/components/ReservationGuests'
 import CheckInDialog from '@/components/CheckInDialog'
@@ -58,7 +60,19 @@ const STATUS_BADGE: Record<Reservation['status'], string> = {
 
 const statusLabel = (status: Reservation['status']) => status.replace('_', ' ')
 
+const STATUS_FILTERS: Array<'all' | Reservation['status']> = ['all', ...STATUS_OPTIONS]
+
+const PAYMENT_METHODS = ['cash', 'card', 'upi', 'bank_transfer', 'other'] as const
+const METHOD_LABEL: Record<(typeof PAYMENT_METHODS)[number], string> = {
+  cash: 'Cash',
+  card: 'Card',
+  upi: 'UPI',
+  bank_transfer: 'Bank transfer',
+  other: 'Other',
+}
+
 export default function ReservationsPage() {
+  const { confirm, alert } = useConfirm()
   const [reservations, setReservations] = useState<Reservation[]>([])
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
@@ -72,6 +86,12 @@ export default function ReservationsPage() {
   const [checkingAvailability, setCheckingAvailability] = useState(false)
   const [selectedRoomTypeId, setSelectedRoomTypeId] = useState('')
   const [formData, setFormData] = useState<FormData>(emptyForm)
+  // Optional deposit taken at booking. Kept separate from formData, which is
+  // spread directly into the reservations insert — a deposit is a payments
+  // row, not a reservations column.
+  const [depositAmount, setDepositAmount] = useState('')
+  const [depositMethod, setDepositMethod] =
+    useState<(typeof PAYMENT_METHODS)[number]>('cash')
 
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<EditFormData>({ ...emptyForm, status: 'confirmed' })
@@ -83,6 +103,8 @@ export default function ReservationsPage() {
 
   const [folioId, setFolioId] = useState<string | null>(null)
   const [guestsId, setGuestsId] = useState<string | null>(null)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<'all' | Reservation['status']>('all')
   const [checkinTarget, setCheckinTarget] = useState<Reservation | null>(null)
   const [checkoutTarget, setCheckoutTarget] = useState<Reservation | null>(null)
 
@@ -182,6 +204,8 @@ export default function ReservationsPage() {
   const openWizard = () => {
     setEditingId(null)
     setFormData(emptyForm)
+    setDepositAmount('')
+    setDepositMethod('cash')
     setSelectedRoomTypeId('')
     setError('')
     setSuccess(false)
@@ -277,18 +301,38 @@ export default function ReservationsPage() {
         return
       }
 
-      const { error: insertError } = await supabase.from('reservations').insert([
-        {
-          org_id: orgId,
-          ...formData,
-          total_price: parseFloat(formData.total_price),
-          status: 'confirmed',
-        },
-      ])
+      const { data: created, error: insertError } = await supabase
+        .from('reservations')
+        .insert([
+          {
+            org_id: orgId,
+            ...formData,
+            total_price: parseFloat(formData.total_price),
+            status: 'confirmed',
+          },
+        ])
+        .select('id')
+        .single()
 
       if (insertError) {
         setError(insertError.message)
         return
+      }
+
+      // Record the optional booking deposit as a payments row against the
+      // new reservation. Non-fatal if it fails — the booking already exists,
+      // and staff can add the payment later from the Folio.
+      const deposit = parseFloat(depositAmount)
+      if (created && !Number.isNaN(deposit) && deposit > 0) {
+        await supabase.from('payments').insert([
+          {
+            org_id: orgId,
+            reservation_id: created.id,
+            amount: deposit,
+            method: depositMethod,
+            note: 'Booking deposit',
+          },
+        ])
       }
 
       setSuccess(true)
@@ -390,7 +434,13 @@ export default function ReservationsPage() {
   }
 
   const handleDelete = async (res: Reservation) => {
-    if (!confirm(`Delete the reservation for ${res.guest_name}?`)) return
+    const ok = await confirm({
+      title: 'Delete reservation?',
+      message: `This permanently deletes the reservation for ${res.guest_name}. Its folio and history will be removed too.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
 
     const { error: deleteError } = await supabase
       .from('reservations')
@@ -398,7 +448,7 @@ export default function ReservationsPage() {
       .eq('id', res.id)
 
     if (deleteError) {
-      alert(deleteError.message)
+      await alert({ title: 'Could not delete reservation', message: deleteError.message })
       return
     }
 
@@ -424,7 +474,7 @@ export default function ReservationsPage() {
     const { data } = await supabase
       .from('audit_logs')
       .select('*')
-      .in('entity_type', ['reservation', 'reservation_charge'])
+      .in('entity_type', ['reservation', 'reservation_charge', 'payment'])
       .eq('entity_id', res.id)
       .order('created_at', { ascending: false })
 
@@ -435,6 +485,103 @@ export default function ReservationsPage() {
   const selectedRoom = rooms.find((r) => r.id === formData.room_id)
   const selectedRoomType = roomTypes.find((t) => t.id === selectedRoom?.room_type_id)
   const nights = getNights(formData.check_in_date, formData.check_out_date)
+
+  const roomNumberFor = (roomId: string) =>
+    rooms.find((r) => r.id === roomId)?.room_number || ''
+
+  // Client-side search (guest name/email/room) + status filter. Fine at the
+  // current data volume; revisit alongside pagination if a single org grows
+  // to thousands of reservations.
+  const query = searchQuery.trim().toLowerCase()
+  const filteredReservations = reservations.filter((res) => {
+    if (statusFilter !== 'all' && res.status !== statusFilter) return false
+    if (!query) return true
+    return (
+      res.guest_name.toLowerCase().includes(query) ||
+      res.guest_email.toLowerCase().includes(query) ||
+      roomNumberFor(res.room_id).toLowerCase().includes(query)
+    )
+  })
+
+  // Actions row + the active expand panel are shared between the desktop
+  // table and the mobile card layout below, so they can't drift.
+  const renderActions = (res: Reservation) => (
+    <div className="flex flex-wrap gap-3 text-sm font-semibold">
+      {res.status === 'confirmed' && (
+        <button onClick={() => setCheckinTarget(res)} className="text-green-400 hover:text-green-300">
+          Check in
+        </button>
+      )}
+      {res.status === 'checked_in' && (
+        <button onClick={() => setCheckoutTarget(res)} className="text-amber-400 hover:text-amber-300">
+          Check out
+        </button>
+      )}
+      <button onClick={() => openEdit(res)} className="text-indigo-400 hover:text-indigo-300">
+        Edit
+      </button>
+      <button onClick={() => handleDelete(res)} className="text-red-400 hover:text-red-300">
+        Delete
+      </button>
+      <button onClick={() => toggleFolio(res)} className="text-gray-400 hover:text-gray-200">
+        {folioId === res.id ? 'Hide Folio' : 'Folio'}
+      </button>
+      <button onClick={() => toggleGuests(res)} className="text-gray-400 hover:text-gray-200">
+        {guestsId === res.id ? 'Hide Guests' : 'Guests'}
+      </button>
+      <button onClick={() => toggleHistory(res)} className="text-gray-400 hover:text-gray-200">
+        {historyId === res.id ? 'Hide History' : 'History'}
+      </button>
+    </div>
+  )
+
+  const renderPanel = (res: Reservation) => {
+    if (folioId === res.id) {
+      return (
+        <ReservationFolio
+          reservationId={res.id}
+          roomTotal={Number(res.total_price)}
+          guestName={res.guest_name}
+          roomNumber={roomNumberFor(res.room_id) || 'Unknown'}
+          checkInDate={res.check_in_date}
+          checkOutDate={res.check_out_date}
+        />
+      )
+    }
+    if (guestsId === res.id) {
+      return (
+        <ReservationGuests
+          reservationId={res.id}
+          guestCount={res.guest_count}
+          leadGuestName={res.guest_name}
+          leadIdType={res.guest_id_type}
+          leadIdNumber={res.guest_id_number}
+        />
+      )
+    }
+    if (historyId === res.id) {
+      if (historyLoading) return <p className="text-sm text-gray-400">Loading history...</p>
+      if (history.length === 0) return <p className="text-sm text-gray-400">No history recorded yet.</p>
+      return (
+        <ul className="space-y-1">
+          {history.map((entry) => (
+            <li key={entry.id} className="text-sm text-gray-300">
+              <span className="font-semibold">
+                {entry.summary ||
+                  entry.action.charAt(0).toUpperCase() + entry.action.slice(1)}
+              </span>
+              {entry.details && <span className="text-gray-400"> — {entry.details}</span>}
+              {' by '}
+              <span className="font-semibold">{entry.actor_name}</span>
+              {' on '}
+              {formatIST(entry.created_at)}
+            </li>
+          ))}
+        </ul>
+      )
+    }
+    return null
+  }
 
   return (
       <main className="max-w-7xl mx-auto px-4 py-12">
@@ -660,7 +807,7 @@ export default function ReservationsPage() {
                                     <div className="flex justify-between items-start">
                                       <h3 className="font-bold text-gray-100">{type.name}</h3>
                                       <span className="text-indigo-400 font-bold">
-                                        ${type.base_price}/night
+                                        {formatMoney(Number(type.base_price))}/night
                                       </span>
                                     </div>
                                     <p className="text-sm text-gray-400 mt-1">{type.description}</p>
@@ -818,6 +965,46 @@ export default function ReservationsPage() {
                               <p className="text-sm text-gray-500 mt-1">
                                 Auto-calculated from the nightly rate and length of stay. Edit if you need to override it.
                               </p>
+                            </div>
+                            <div className="md:col-span-2 grid md:grid-cols-2 gap-6 pt-2 border-t border-gray-800">
+                              <div>
+                                <label className="block text-gray-300 font-semibold mb-2">
+                                  Deposit taken now{' '}
+                                  <span className="text-gray-500 font-normal">(optional)</span>
+                                </label>
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={depositAmount}
+                                  onChange={(e) => setDepositAmount(e.target.value)}
+                                  placeholder="0.00"
+                                  className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
+                                />
+                                <p className="text-sm text-gray-500 mt-1">
+                                  Recorded as a payment on the folio. Leave blank if none.
+                                </p>
+                              </div>
+                              <div>
+                                <label className="block text-gray-300 font-semibold mb-2">
+                                  Deposit method
+                                </label>
+                                <select
+                                  value={depositMethod}
+                                  onChange={(e) =>
+                                    setDepositMethod(
+                                      e.target.value as (typeof PAYMENT_METHODS)[number]
+                                    )
+                                  }
+                                  className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
+                                >
+                                  {PAYMENT_METHODS.map((m) => (
+                                    <option key={m} value={m}>
+                                      {METHOD_LABEL[m]}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
                             </div>
                             <div className="md:col-span-2">
                               <motion.button
@@ -994,14 +1181,56 @@ export default function ReservationsPage() {
           )}
         </AnimatePresence>
 
-        <div className="bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
-          {loading ? (
-            <div className="p-8 text-center text-gray-400">Loading...</div>
-          ) : reservations.length === 0 ? (
-            <div className="p-8 text-center text-gray-400">
-              No reservations yet
+        {!loading && reservations.length > 0 && (
+          <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-center sm:justify-between">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by guest, email, or room…"
+              className="w-full sm:max-w-xs px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <div className="flex flex-wrap gap-2">
+              {STATUS_FILTERS.map((filter) => {
+                const count =
+                  filter === 'all'
+                    ? reservations.length
+                    : reservations.filter((r) => r.status === filter).length
+                const active = statusFilter === filter
+                return (
+                  <button
+                    key={filter}
+                    onClick={() => setStatusFilter(filter)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-semibold capitalize transition ${
+                      active
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+                    }`}
+                  >
+                    {filter === 'all' ? 'All' : statusLabel(filter)} ({count})
+                  </button>
+                )
+              })}
             </div>
-          ) : (
+          </div>
+        )}
+
+        {loading ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 text-center text-gray-400">
+            Loading...
+          </div>
+        ) : reservations.length === 0 ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 text-center text-gray-400">
+            No reservations yet
+          </div>
+        ) : filteredReservations.length === 0 ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 text-center text-gray-400">
+            No reservations match your search or filter.
+          </div>
+        ) : (
+          <>
+          {/* Desktop: table (horizontally scrolls within its card if needed) */}
+          <div className="hidden md:block bg-gray-900 border border-gray-800 rounded-lg shadow overflow-x-auto">
             <table className="w-full min-w-180">
               <thead className="bg-gray-800">
                 <tr>
@@ -1029,7 +1258,7 @@ export default function ReservationsPage() {
                 </tr>
               </thead>
               <tbody>
-                {reservations.map((res) => (
+                {filteredReservations.map((res) => (
                   <Fragment key={res.id}>
                   <tr className="border-t border-gray-800 hover:bg-gray-800">
                     <td className="px-6 py-3">
@@ -1053,7 +1282,7 @@ export default function ReservationsPage() {
                       {res.check_out_date}
                     </td>
                     <td className="px-6 py-3 text-gray-100">
-                      ${res.total_price}
+                      {formatMoney(Number(res.total_price))}
                     </td>
                     <td className="px-6 py-3">
                       <span
@@ -1063,109 +1292,13 @@ export default function ReservationsPage() {
                       </span>
                     </td>
                     <td className="px-6 py-3">
-                      <div className="flex gap-3 text-sm font-semibold">
-                        {res.status === 'confirmed' && (
-                          <button
-                            onClick={() => setCheckinTarget(res)}
-                            className="text-green-400 hover:text-green-300"
-                          >
-                            Check in
-                          </button>
-                        )}
-                        {res.status === 'checked_in' && (
-                          <button
-                            onClick={() => setCheckoutTarget(res)}
-                            className="text-amber-400 hover:text-amber-300"
-                          >
-                            Check out
-                          </button>
-                        )}
-                        <button
-                          onClick={() => openEdit(res)}
-                          className="text-indigo-400 hover:text-indigo-300"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => handleDelete(res)}
-                          className="text-red-400 hover:text-red-300"
-                        >
-                          Delete
-                        </button>
-                        <button
-                          onClick={() => toggleFolio(res)}
-                          className="text-gray-400 hover:text-gray-200"
-                        >
-                          {folioId === res.id ? 'Hide Folio' : 'Folio'}
-                        </button>
-                        <button
-                          onClick={() => toggleGuests(res)}
-                          className="text-gray-400 hover:text-gray-200"
-                        >
-                          {guestsId === res.id ? 'Hide Guests' : 'Guests'}
-                        </button>
-                        <button
-                          onClick={() => toggleHistory(res)}
-                          className="text-gray-400 hover:text-gray-200"
-                        >
-                          {historyId === res.id ? 'Hide History' : 'History'}
-                        </button>
-                      </div>
+                      {renderActions(res)}
                     </td>
                   </tr>
-                  {folioId === res.id && (
+                  {renderPanel(res) && (
                     <tr className="border-t border-gray-800 bg-gray-900/60">
                       <td colSpan={7} className="px-6 py-4">
-                        <ReservationFolio
-                          reservationId={res.id}
-                          roomTotal={Number(res.total_price)}
-                          guestName={res.guest_name}
-                          roomNumber={rooms.find((r) => r.id === res.room_id)?.room_number || 'Unknown'}
-                          checkInDate={res.check_in_date}
-                          checkOutDate={res.check_out_date}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {guestsId === res.id && (
-                    <tr className="border-t border-gray-800 bg-gray-900/60">
-                      <td colSpan={7} className="px-6 py-4">
-                        <ReservationGuests
-                          reservationId={res.id}
-                          guestCount={res.guest_count}
-                          leadGuestName={res.guest_name}
-                          leadIdType={res.guest_id_type}
-                          leadIdNumber={res.guest_id_number}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                  {historyId === res.id && (
-                    <tr className="border-t border-gray-800 bg-gray-900/60">
-                      <td colSpan={7} className="px-6 py-4">
-                        {historyLoading ? (
-                          <p className="text-sm text-gray-400">Loading history...</p>
-                        ) : history.length === 0 ? (
-                          <p className="text-sm text-gray-400">No history recorded yet.</p>
-                        ) : (
-                          <ul className="space-y-1">
-                            {history.map((entry) => (
-                              <li key={entry.id} className="text-sm text-gray-300">
-                                <span className="font-semibold">
-                                  {entry.summary ||
-                                    entry.action.charAt(0).toUpperCase() + entry.action.slice(1)}
-                                </span>
-                                {entry.details && (
-                                  <span className="text-gray-400"> — {entry.details}</span>
-                                )}
-                                {' by '}
-                                <span className="font-semibold">{entry.actor_name}</span>
-                                {' on '}
-                                {formatIST(entry.created_at)}
-                              </li>
-                            ))}
-                          </ul>
-                        )}
+                        {renderPanel(res)}
                       </td>
                     </tr>
                   )}
@@ -1173,8 +1306,61 @@ export default function ReservationsPage() {
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+
+          {/* Mobile: stacked cards (no horizontal scroll) */}
+          <div className="md:hidden space-y-4">
+            {filteredReservations.map((res) => {
+              const panel = renderPanel(res)
+              return (
+                <div
+                  key={res.id}
+                  className="bg-gray-900 border border-gray-800 rounded-lg shadow p-4"
+                >
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-100">{res.guest_name}</p>
+                      <p className="text-sm text-gray-400 break-all">{res.guest_email}</p>
+                    </div>
+                    <span
+                      className={`shrink-0 px-3 py-1 rounded-full text-xs font-semibold capitalize ${STATUS_BADGE[res.status]}`}
+                    >
+                      {statusLabel(res.status)}
+                    </span>
+                  </div>
+
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-2 mt-3 text-sm">
+                    <div>
+                      <dt className="text-gray-500">Room</dt>
+                      <dd className="text-gray-100">{roomNumberFor(res.room_id) || 'Unknown'}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Price</dt>
+                      <dd className="text-gray-100">{formatMoney(Number(res.total_price))}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Check-in</dt>
+                      <dd className="text-gray-100">{res.check_in_date}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-gray-500">Check-out</dt>
+                      <dd className="text-gray-100">{res.check_out_date}</dd>
+                    </div>
+                  </dl>
+
+                  <div className="mt-3 pt-3 border-t border-gray-800">
+                    {renderActions(res)}
+                  </div>
+
+                  {panel && (
+                    <div className="mt-3 pt-3 border-t border-gray-800">{panel}</div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          </>
+        )}
 
         {checkinTarget && (
           <CheckInDialog

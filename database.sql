@@ -830,7 +830,6 @@ BEGIN
         v_details := v_details || ' — ' || NEW.guest_count::TEXT
           || CASE WHEN NEW.guest_count = 1 THEN ' guest' ELSE ' guests' END;
       END IF;
-
       IF NEW.status = 'checked_out' AND NEW.check_out_date IS DISTINCT FROM OLD.check_out_date THEN
         v_nights_diff := OLD.check_out_date - NEW.check_out_date;
         IF v_nights_diff > 0 THEN
@@ -871,5 +870,163 @@ BEGIN
     VALUES (NEW.org_id, 'reservation', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW), v_summary, v_details);
     RETURN NEW;
   END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =====================================================================
+-- Per-org currency. Each hotel picks the currency its prices display in
+-- (see lib/currency.ts for the supported codes). Existing rows default to
+-- USD so nothing breaks; the setup wizard sets it for new orgs and admins
+-- can change it from /dashboard/settings. This only affects display —
+-- amounts are still stored as plain DECIMALs everywhere. (The '$' literals
+-- baked into the audit-log detail strings above are historical text and are
+-- intentionally left as-is.)
+ALTER TABLE organizations ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD';
+
+-- =====================================================================
+-- BILLING — PHASE A: Payments
+-- Money actually received against a reservation. Additive, like
+-- reservation_charges: the folio's amount OWED is
+--   total_price + SUM(reservation_charges.amount)
+-- and the amount PAID is SUM(payments.amount); balance due is the
+-- difference. Add/remove only (no UPDATE policy), mirroring
+-- reservation_charges — correct a payment by deleting and re-adding.
+-- A refund is simply a negative-amount row (same convention as a
+-- discount being a negative charge), not a separate entity.
+-- =====================================================================
+CREATE TABLE payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  reservation_id UUID NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  amount DECIMAL(10,2) NOT NULL,            -- positive = payment, negative = refund
+  method TEXT NOT NULL DEFAULT 'cash',      -- cash | card | upi | bank_transfer | other
+  note TEXT,
+  paid_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_payments_org_reservation ON payments(org_id, reservation_id);
+
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Org members can view payments" ON payments
+  FOR SELECT USING (org_id = current_org_id());
+CREATE POLICY "Org members can insert payments" ON payments
+  FOR INSERT WITH CHECK (org_id = current_org_id());
+CREATE POLICY "Org members can delete payments" ON payments
+  FOR DELETE USING (org_id = current_org_id());
+
+-- Extend the audit trail to payments, using the same trigger-driven
+-- approach as reservation_charges. entity_id is the *reservation's* id
+-- (not the payment's own id) so a payment's activity interleaves with
+-- its reservation's own history, both in the per-row History panel and
+-- the full Activity Log. Only INSERT/DELETE matter — payments are
+-- add/remove only, per the no-UPDATE-policy design above. The '$'
+-- literals here match the existing charge-audit strings (historical
+-- display text; per-org currency is a UI concern, not baked into logs).
+CREATE OR REPLACE FUNCTION log_payment_audit() RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_name TEXT;
+  v_amount_str TEXT;
+BEGIN
+  SELECT name INTO v_actor_name FROM users WHERE id = auth.uid();
+
+  IF TG_OP = 'DELETE' THEN
+    v_amount_str := CASE WHEN OLD.amount < 0
+      THEN '-$' || to_char(abs(OLD.amount), 'FM999999990.00')
+      ELSE '$' || to_char(OLD.amount, 'FM999999990.00') END;
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (OLD.org_id, 'payment', OLD.reservation_id, 'delete', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(OLD),
+      CASE WHEN OLD.amount < 0 THEN 'Refund Removed' ELSE 'Payment Removed' END,
+      v_amount_str || ' (' || OLD.method || ')');
+    RETURN OLD;
+  ELSE
+    v_amount_str := CASE WHEN NEW.amount < 0
+      THEN '-$' || to_char(abs(NEW.amount), 'FM999999990.00')
+      ELSE '$' || to_char(NEW.amount, 'FM999999990.00') END;
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'payment', NEW.reservation_id, 'create', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      CASE WHEN NEW.amount < 0 THEN 'Refund Issued' ELSE 'Payment Received' END,
+      v_amount_str || ' (' || NEW.method || ')');
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_payments_audit
+AFTER INSERT OR DELETE ON payments
+FOR EACH ROW EXECUTE FUNCTION log_payment_audit();
+
+-- =====================================================================
+-- BILLING — PHASE B: Invoices (immutable records)
+-- Turns the ephemeral "Print Receipt" into a real document. Issuing an
+-- invoice is a deliberate, MANUAL staff action. At issue time we FREEZE
+-- the line items + totals + header (guest/room/dates) + the org's
+-- currency code into `snapshot` JSONB — same immutability philosophy as
+-- audit_logs and the no-FK items->reservation_charges design. Editing or
+-- deleting the underlying reservation/charges afterward does NOT change
+-- an already-issued invoice. No DELETE — a mistake is VOIDed (a status
+-- change), so numbers are never reused and the record survives.
+-- =====================================================================
+CREATE TABLE invoices (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  reservation_id UUID NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  invoice_number TEXT NOT NULL,             -- date-based, unique per org (see next_invoice_number)
+  status TEXT NOT NULL DEFAULT 'issued',    -- issued | paid | void
+  snapshot JSONB NOT NULL,                  -- frozen header + line items + totals + currency
+  subtotal DECIMAL(10,2) NOT NULL,          -- denormalized for the list view
+  tax_total DECIMAL(10,2) NOT NULL DEFAULT 0,
+  total DECIMAL(10,2) NOT NULL,
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, invoice_number)
+);
+
+CREATE INDEX idx_invoices_org_reservation ON invoices(org_id, reservation_id);
+
+ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Org members can view invoices" ON invoices
+  FOR SELECT USING (org_id = current_org_id());
+CREATE POLICY "Org members can insert invoices" ON invoices
+  FOR INSERT WITH CHECK (org_id = current_org_id());
+-- UPDATE only (issued -> paid, issued -> void). No DELETE policy.
+CREATE POLICY "Org members can update invoices" ON invoices
+  FOR UPDATE USING (org_id = current_org_id()) WITH CHECK (org_id = current_org_id());
+
+-- Date-based invoice numbers: INV-YYYY-MM-NNNN, sequential within each
+-- org within each calendar month (period), computed in IST to line up
+-- with formatIST()/dateIST() so a late-night issue lands in the intended
+-- month. This is the ONE place we deviate from the app's "sequential,
+-- non-atomic Supabase calls" style: number allocation must be race-safe
+-- (two front-desk staff could issue at the same instant), so it goes
+-- through this SECURITY DEFINER function + a per-(org, period) counter.
+-- The ON CONFLICT ... DO UPDATE ... RETURNING is atomic — no lost or
+-- duplicate numbers under concurrency. The UNIQUE(org_id, invoice_number)
+-- on invoices is the belt-and-suspenders backstop.
+CREATE TABLE invoice_counters (
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  period TEXT NOT NULL,          -- 'YYYY-MM' (IST)
+  last_seq INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (org_id, period)
+);
+-- RLS on, but no policies: only the SECURITY DEFINER function below (which
+-- runs as the table owner, bypassing RLS) ever touches this table.
+ALTER TABLE invoice_counters ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION next_invoice_number(p_org UUID)
+RETURNS TEXT AS $$
+DECLARE
+  v_period TEXT := to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM');
+  v_seq INT;
+BEGIN
+  INSERT INTO invoice_counters (org_id, period, last_seq)
+  VALUES (p_org, v_period, 1)
+  ON CONFLICT (org_id, period)
+  DO UPDATE SET last_seq = invoice_counters.last_seq + 1
+  RETURNING last_seq INTO v_seq;
+
+  RETURN 'INV-' || v_period || '-' || lpad(v_seq::text, 4, '0');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

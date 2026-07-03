@@ -6,12 +6,12 @@
 - **Generic template**: Customizable for specific clients later
 - **Lean startup**: Free tier technology stack, single developer (primary) + 1 co-developer
 
-**Current scope**: Phase 2 is essentially complete — real auth/audit trail, full check-in/check-out workflows, housekeeping & maintenance, an itemized folio with a priced items catalog, occupancy/guest-ID capture, and a richer activity log. **See [Outstanding Manual Steps](#outstanding-manual-steps-run-this-next) before doing anything else in a new session** — the last two migrations in `database.sql` are not confirmed deployed yet.
+**Current scope**: Phase 2 is essentially complete — real auth/audit trail, full check-in/check-out workflows, housekeeping & maintenance, an itemized folio with a priced items catalog, occupancy/guest-ID capture, and a richer activity log. A follow-up UX polish pass added: **per-org currency** (each hotel picks its display currency), **reservation search + status filter**, a **styled confirm/alert dialog** (replacing native `window.confirm`/`alert`), a **lucide-react icon set** (replacing decorative emoji), and a **mobile card layout** for the Reservations list. All of `database.sql` is confirmed deployed against the live Supabase project (see [Outstanding Manual Steps](#outstanding-manual-steps) — nothing currently pending).
 
 ## Tech Stack
 - **Framework**: Next.js 16+ (App Router)
 - **Database**: Supabase (PostgreSQL + Auth + Realtime — Realtime is available but not yet used)
-- **Frontend**: React 19, TypeScript, Tailwind CSS 4, Framer Motion (subtle transitions)
+- **Frontend**: React 19, TypeScript, Tailwind CSS 4, Framer Motion (subtle transitions), lucide-react (icons)
 - **Auth**: Supabase Auth (email/password) — one shared `/login` page for both hotel admins and staff
 - **Theme**: Dark mode only (no light mode/toggle)
 - **Hosting**: Vercel (Next.js native)
@@ -67,6 +67,34 @@ Both directions are full multi-step wizard dialogs, not one-click actions — ev
 - **`components/ReservationFolio.tsx`** (toggle: "Folio", on the Reservations table): shows the room charge + all itemized charges + grand total. "+ Add Charge" offers two modes — **From Catalog** (default; `ItemGrid`, batch-add multiple items at once) and **Custom** (free-text description/category/signed amount, for anything not in the catalog). "Print Receipt" opens a small, self-contained popup window (guest, room, dates, itemized charges, total, IST timestamp) and triggers the browser's print dialog — no PDF library; the browser's own "Save as PDF" option covers that case.
 - `/dashboard/items` — CRUD page for the catalog (table view: name, price, edit/delete). Reachable from `/dashboard/settings`, not a top-level nav tab.
 
+### Payments (folio settlement) — Billing Phase A
+- **`payments`**: money actually received against a reservation — the counterpart to the folio's "owed" side. Amount **owed** is `total_price + SUM(reservation_charges.amount)`; amount **paid** is `SUM(payments.amount)`; **balance due** is owed − paid. Columns: `amount`, `method` (`cash`/`card`/`upi`/`bank_transfer`/`other` — a UI option list, not a DB enum), `note`, `paid_at`. **Add/remove only** (no UPDATE policy), mirroring `reservation_charges`; a **refund is a negative-amount row** (same convention as a discount being a negative charge), not a separate entity.
+- **Audit**: `log_payment_audit()` trigger (INSERT/DELETE) logs `entity_type = 'payment'` against the **reservation's** id (like `log_reservation_charge_audit()`), so payments interleave in the per-row History expander and the Activity Log. Summaries: `Payment Received`/`Payment Removed`/`Refund Issued`/`Refund Removed`. The History expander and `/activity` queries widened to `entity_type IN ('reservation','reservation_charge','payment')`.
+- **Surfaced in the UI**:
+  - `components/ReservationFolio.tsx` — under Total it lists each payment (removable) plus a **Balance Due** line (amber when > 0, emerald "Settled" when ≤ 0), and a **"+ Record Payment"** form (amount/method/note). The print receipt gained payment lines + a Balance Due total.
+  - `components/CheckoutDialog.tsx` — the Review step has optional payment capture (amount + method, "Pay full total" shortcut). **Note**: its total reflects only *this stay's* room + credit + items being added now — it does **not** load prior charges/deposits, so the field is intentionally not pre-filled with a computed full balance; the Folio panel is the source of truth for the real balance.
+  - New-reservation wizard (`app/dashboard/reservations/page.tsx`, Guest Details step) — an **optional booking deposit** (amount + method), written as a `payments` row (`note: 'Booking deposit'`) after the reservation inserts. The reservation insert now uses `.select('id').single()` to get the id for that follow-up write; the deposit write is non-fatal (booking already exists if it fails).
+- Non-atomic, consistent with the app's sequential-Supabase-call style. Neither the checkout payment nor the booking deposit is kept in sync if amounts are edited later — correct via the Folio's record/remove. See `BILLING_PLAN.md` for the full billing roadmap (deferred Phase C tax, Phase D reporting).
+
+### Invoices (immutable records) — Billing Phase B
+- **`invoices`**: a formal billing document, issued **manually** from the folio (deliberate staff action — no auto-issue on checkout). At issue time the current folio state is **frozen** into `snapshot` JSONB (header: guest/room/dates; `lines` = room charge + each folio charge; `subtotal`/`tax_total`/`total`; `amount_paid`/`balance_due`; **and the org's currency code**). Editing or deleting the underlying reservation/charges/payments afterward does **not** change an issued invoice — same immutability philosophy as `audit_logs` and the no-FK `items`→`reservation_charges` design. `status` is `issued` (or `paid` if the balance was already ≤ 0 at issue) / `void`. **No DELETE** — a mistake is **voided** (a `status` update), so numbers are never reused and the record survives; `invoices` has view/insert/update RLS but no delete policy.
+- **Date-based numbers**: `INV-YYYY-MM-NNNN` (e.g. `INV-2026-07-0001`), sequential per org **per calendar month**, computed in **IST** (matches `formatIST`/`dateIST`). Allocation is the **one** place the app deviates from its "sequential non-atomic Supabase calls" style — it must be race-safe, so it goes through the `next_invoice_number(p_org)` **`SECURITY DEFINER`** Postgres function over an `invoice_counters` table (`(org_id, period)` PK) with an atomic `ON CONFLICT DO UPDATE ... RETURNING`. `UNIQUE(org_id, invoice_number)` on `invoices` is the backstop. Called from the client via `supabase.rpc('next_invoice_number', { p_org: orgId })`. `invoice_counters` has RLS enabled with **no policies** — only the definer function (running as owner) touches it.
+- **Printing** goes through **`lib/printInvoice.ts`** (`printInvoice(invoice)`), shared by the folio panel and the invoices list. It renders entirely from the **snapshot** (never live data) and formats amounts in the **snapshot's frozen currency** via `formatMoney(n, { currency })` — so a re-print of an old invoice always matches what the guest originally received, even after a later folio or org-currency change. Voided invoices print with a diagonal "VOID" watermark. (`formatMoney` gained an optional `{ currency }` override for exactly this; everyday callers still read the active org currency from localStorage.)
+- **Surfaced in the UI**:
+  - `components/ReservationFolio.tsx` — an **"Issue Invoice"** action (alongside Add Charge / Record Payment) allocates the number + writes the snapshot; issued invoices list under the folio with **Print** and **Void** (Void uses `useConfirm`, `danger`).
+  - **`app/dashboard/invoices/page.tsx`** — org-wide invoice list (number, guest, stay, issued, total, balance, status) with a search box + status filter tabs, following the `overflow-x-auto` card + `min-w-*` table convention. Linked from `/dashboard/settings` (hub), not top-level nav. "Print" per row via the same shared helper.
+- This is still tax-free (`tax_total` is always 0) until **Billing Phase C** wires up a configurable rate; the `tax_total` column + snapshot field already reserve the slot so historical invoices keep their original figures when it lands.
+
+### Currency (per-org)
+- Each hotel picks its own display currency, stored on `organizations.currency` (a code like `USD`/`INR`/`EUR`; defaults to `USD`). This is **display/formatting only** — all amounts are still stored as plain `DECIMAL`s; changing the currency never rewrites stored values.
+- **`lib/currency.ts`** is the single source of truth: a `CURRENCIES` map (code → label/symbol/locale) and `formatMoney(amount, { decimals })` used **everywhere** a price renders (Dashboard, Reservations, Rooms, Items, Folio, both wizards, ItemGrid). It replaced ~10 ad-hoc `` `$${n.toFixed(2)}` `` helpers scattered across those files — don't reintroduce inline `$` formatting. `formatMoney` handles negatives (`-$50.00`, used by folio discounts/credits) and adds thousands-grouping per the currency's locale.
+- **How the code reaches every component**: mirrored into `localStorage` (`currency` key) at login by `lib/AuthContext.tsx`, exactly like `orgId` — so `formatMoney` reads it synchronously without threading the org through props. Set at signup by the `/setup` wizard, changeable anytime from `/dashboard/settings` (which also updates localStorage so the change takes effect without a re-login). Falls back to `USD` if unset. `signOut()` clears it alongside `orgId`.
+- **Deliberately not per-user or per-reservation** — currency is an org-level setting; there's no historical currency captured on individual charges (a hotel changing currency is expected to be rare/one-time). The `$` literals baked into old `audit_logs` detail strings are historical text and left as-is.
+
+### Confirm / Alert Dialogs
+- **`lib/ConfirmDialog.tsx`** is a dark-themed, promise-based replacement for the browser's native `window.confirm`/`window.alert`. `ConfirmProvider` is mounted once in `app/dashboard/layout.tsx`; any dashboard page calls `const { confirm, alert } = useConfirm()` and awaits it: `if (!(await confirm({ title, message, confirmLabel, danger }))) return`.
+- Replaced every native dialog in the dashboard (delete reservation/room/room-type/maintenance-issue/item, and the reservation delete-error alert). `danger: true` renders a red confirm button for destructive actions. New destructive actions should use this, not `window.confirm`.
+
 ### Housekeeping & Maintenance
 - `/dashboard/housekeeping` has two sections:
   - **Cleaning Queue**: every room with `status = 'cleaning'` (i.e., checked out and not yet turned around), with a one-click "Mark clean" → `available`, and a "Report issue" shortcut per room.
@@ -85,33 +113,37 @@ Both directions are full multi-step wizard dialogs, not one-click actions — ev
 `app/dashboard/page.tsx` is a real operations dashboard, not just a stats/checklist page:
 - **Room status breakdown**: counts for all four `Room['status']` values (available/occupied/cleaning/maintenance), not just "occupied".
 - **Arrivals/departures today**: reservations where `check_in_date`/`check_out_date` equals `todayIST()`, excluding cancelled. Both lists are actionable — "Check in" / "Check out" buttons open `CheckInDialog`/`CheckoutDialog` directly from the dashboard.
-- **Revenue snapshot**: this month's revenue from non-cancelled reservations whose `check_in_date` falls in the current IST month, plus a separate "upcoming confirmed revenue" figure for future `confirmed` bookings not yet checked in. **Note**: this still sums `reservations.total_price` only — it does not include folio charges (items, surcharges, discounts), a known gap not yet closed.
+- **Revenue snapshot** (three cards, Billing Phase D): (1) this month's revenue from non-cancelled reservations whose `check_in_date` falls in the current IST month; (2) "upcoming confirmed revenue" for future `confirmed` bookings not yet checked in; (3) **Outstanding Balance** — money still owed across active reservations. All three now include **folio charges**, not just `total_price`: the dashboard loads `reservation_charges` + `payments` for the org and computes `folioTotal(r) = total_price + Σ charges`; revenue uses `folioTotal`, and outstanding = `Σ max(0, folioTotal − payments)` (only reservations with a positive balance — an overpaid/deposit-heavy booking is a credit, not a receivable). This closes the former "revenue ignores folio charges" gap. Still no ADR/RevPAR/occupancy KPIs.
 - **Staff on shift today**: `staff_schedules` rows where `shift_date` equals `todayIST()`, joined against `users` for names.
-- **Quick Actions**: links to Reservations, Rooms, Housekeeping, Items, and Staff.
-- Prices are shown with a plain `$` prefix everywhere (Reservations, Rooms, Dashboard, Items) — the app has no currency setting, so don't introduce a different currency format on just one page.
+- **Quick Actions**: links to Reservations, Rooms, Housekeeping, Items, and Staff (icons via lucide-react).
+- Prices everywhere go through `formatMoney` from `lib/currency.ts` (the org's configured currency) — don't hardcode a `$` prefix or a one-off format on any page. The dashboard's revenue figures use `formatMoney(n, { decimals: 0 })` for whole-currency display.
 
 ### Rooms Page Organization
 `app/dashboard/rooms/page.tsx` groups the Rooms section by room type (section header per `room_types` row, rooms sorted numerically by `room_number` within each), with a status filter tab row (All/Available/Occupied/Cleaning/Maintenance, each showing a live count) above it. Rooms whose `room_type_id` doesn't match any current room type render under an "Other Rooms" fallback group rather than being hidden. Room types now also carry `extra_guest_fee` (per-night surcharge rate) alongside `base_price`/`max_guests`/`description`.
 
+### Reservations Page Organization
+`app/dashboard/reservations/page.tsx` has a **search box** (matches guest name, email, or room number) and a **status filter tab row** (All / Confirmed / Checked in / Checked out / Cancelled, each with a live count) above the list. Both filter the already-loaded `reservations` array client-side into `filteredReservations` (fine at current volume — revisit with pagination if an org grows to thousands). A filtered-to-empty result shows its own "No reservations match…" message, distinct from the "No reservations yet" empty state.
+- **Two layouts, one data path**: a desktop `<table>` (`hidden md:block`, still `overflow-x-auto` + `min-w-180`) and a **mobile stacked-card list** (`md:hidden`) below the `md` breakpoint. The per-row action buttons and the active expand panel (Folio/Guests/History) are rendered by two shared in-component helpers — `renderActions(res)` and `renderPanel(res)` — reused by both layouts so they can't drift. Add new row actions/panels in those helpers, not inline in one layout.
+
 ### Navigation
-Top nav (`components/DashboardNav.tsx`): **Dashboard · Reservations · Rooms · Housekeeping · Settings**, plus the `QuickCheckInOut` dropdowns and the profile/logout section. `/dashboard/settings` is a hub page linking to **Items**, **Activity Log**, and **Staff** — these were top-level nav tabs originally, moved out to declutter the primary nav (per explicit request). Items and Staff pages each have a "← Back to Settings" link; Activity Log kept its pre-existing "← Back to Reservations" link since that's still its more useful context.
+Top nav (`components/DashboardNav.tsx`): **Dashboard · Reservations · Rooms · Housekeeping · Settings**, plus the `QuickCheckInOut` dropdowns and the profile/logout section. `/dashboard/settings` is a hub page linking to **Items**, **Invoices**, **Activity Log**, and **Staff** — these were top-level nav tabs originally, moved out to declutter the primary nav (per explicit request). Items, Invoices, and Staff pages each have a "← Back to Settings" link; Activity Log kept its pre-existing "← Back to Reservations" link since that's still its more useful context.
 
 **Mobile nav**: below the `md` breakpoint (768px) the inline links + user/logout collapse into a hamburger drawer (`NAV_LINKS` array drives both the desktop row and the drawer so they can't drift), while `QuickCheckInOut` stays in the top bar — Check In/Out are the highest-frequency front-desk actions and their count badges need to stay one tap away.
 
 ### Responsive / Mobile
 The whole dashboard is expected to hold the viewport on any device (verified down to phone widths). Conventions used throughout, worth matching on new pages:
-- **Data tables** (`reservations`, `activity`, `staff`, `items`) live in an `overflow-x-auto` card with a `min-w-*` on the `<table>` — they scroll horizontally within their card rather than pushing the page wider than the screen. Don't wrap a wide table in `overflow-hidden` (clips the Actions column instead of letting it scroll).
+- **Data tables** (`activity`, `staff`, `items`) live in an `overflow-x-auto` card with a `min-w-*` on the `<table>` — they scroll horizontally within their card rather than pushing the page wider than the screen. Don't wrap a wide table in `overflow-hidden` (clips the Actions column instead of letting it scroll). The **Reservations** page goes further: its table is desktop-only (`hidden md:block`) and switches to a stacked-card layout on mobile (see Reservations Page Organization) — the model to follow if `activity`/`staff`/`items` ever outgrow horizontal scroll on phones.
 - **Page/section header toolbars** that pair a heading with an action button use `flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center` so the button drops below the title on mobile instead of colliding with it.
 - **Page titles** are `text-3xl sm:text-4xl` (not a bare `text-4xl`); the dashboard's "Welcome to {org}" also carries `wrap-break-word` for long single-token org names.
 - **Grids/forms** use `md:grid-cols-*` (single column on mobile) — already the norm.
-- **Modals** (`CheckInDialog`/`CheckoutDialog`) are `w-full max-w-lg` on a `px-4` backdrop with `max-h-[85vh] overflow-y-auto`; the `QuickCheckInOut` dropdowns are `w-80 max-w-[calc(100vw-1.5rem)]` so they never exceed a narrow viewport.
-- One known rough edge (see Phase 2.5): expanding Folio/Guests/History on the Reservations table on a phone renders the panel inside the `min-w-180` table row, so it scrolls horizontally with the table.
+- **Modals** (`CheckInDialog`/`CheckoutDialog`, and the `ConfirmDialog`) are `w-full max-w-lg`/`max-w-sm` on a `px-4` backdrop with `max-h-[85vh] overflow-y-auto`; the `QuickCheckInOut` dropdowns are `w-80 max-w-[calc(100vw-1.5rem)]` so they never exceed a narrow viewport.
+- The old rough edge (Folio/Guests/History expanders side-scrolling inside the Reservations table on a phone) is **resolved** — the mobile card layout renders those panels full-width inside each card.
 
 ## Key Files
 
 ### Database
-- `database.sql` - Full schema (run once in Supabase SQL editor; new sections are appended, not rewritten in place — **see [Outstanding Manual Steps](#outstanding-manual-steps-run-this-next)**, the last two sections are not confirmed deployed)
-  - Tables: `organizations`, `users`, `rooms`, `room_types`, `reservations`, `staff_schedules`, `maintenance_logs`, `audit_logs`, `reservation_charges`, `items`, `reservation_guests`
+- `database.sql` - Full schema (run once in Supabase SQL editor; new sections are appended, not rewritten in place). All sections confirmed deployed — see [Outstanding Manual Steps](#outstanding-manual-steps) (nothing currently pending)
+  - Tables: `organizations`, `users`, `rooms`, `room_types`, `reservations`, `staff_schedules`, `maintenance_logs`, `audit_logs`, `reservation_charges`, `items`, `reservation_guests`, `payments`, `invoices`, `invoice_counters`
   - RLS policies for data isolation (org-scoped, not `USING (true)`) — no role-based restrictions
   - Trigger-based: audit logging (reservations + reservation_charges), room status sync (from reservations + from maintenance_logs)
   - Indexes for performance
@@ -127,7 +159,8 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - `app/dashboard/rooms/page.tsx` - Room types + rooms, grouped by type with a status filter; maintenance rooms link to their open issue
 - `app/dashboard/housekeeping/page.tsx` - Cleaning queue + maintenance issue tracker
 - `app/dashboard/items/page.tsx` - Priced items catalog CRUD
-- `app/dashboard/settings/page.tsx` - Hub linking to Items, Activity Log, Staff
+- `app/dashboard/invoices/page.tsx` - Issued-invoice list (search + status filter, per-row print)
+- `app/dashboard/settings/page.tsx` - Hub linking to Items, Invoices, Activity Log, Staff; also hosts the org **display-currency** picker
 - `app/dashboard/staff/page.tsx` - Staff members + scheduling
 - `app/api/staff/create/route.ts` - Service-role staff account provisioning
 
@@ -136,7 +169,7 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - `components/QuickCheckInOut.tsx` - Navbar quick check-in/out dropdowns
 - `components/CheckInDialog.tsx` - Check-in wizard (occupancy, guest IDs, review)
 - `components/CheckoutDialog.tsx` - Check-out wizard (departure date, items, review)
-- `components/ReservationFolio.tsx` - Itemized folio panel + print receipt
+- `components/ReservationFolio.tsx` - Itemized folio panel (charges + payments/balance) + print receipt + issue/void invoices
 - `components/ReservationGuests.tsx` - Lead + additional guest ID viewer/editor
 - `components/ItemGrid.tsx` - Shared item-catalog picker (qty steppers)
 - `components/ActivityCalendar.tsx` - Month-grid date filter for the Activity Log
@@ -144,21 +177,18 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 ### Utilities
 - `lib/supabase.ts` - Supabase client singleton (anon key, browser)
 - `lib/supabaseAdmin.ts` - Service-role client, lazy-loaded, server-only (`app/api/**` only)
-- `lib/AuthContext.tsx` - Session/profile React context
-- `lib/types.ts` - TypeScript interfaces for all entities
+- `lib/AuthContext.tsx` - Session/profile React context (also mirrors `orgId` + `currency` into localStorage at login)
+- `lib/ConfirmDialog.tsx` - `ConfirmProvider` + `useConfirm()` — promise-based dark-themed confirm/alert (mounted in the dashboard layout)
+- `lib/currency.ts` - `CURRENCIES` map + `formatMoney()` (optional `{ currency }` override for printing invoices in their frozen code); the single money-formatting helper for the whole app (per-org currency)
+- `lib/printInvoice.ts` - `printInvoice(invoice)` — renders an invoice's frozen snapshot to a print window (shared by folio + invoices list)
+- `lib/types.ts` - TypeScript interfaces for all entities (`Organization` carries `currency`; `Payment`, `Invoice`/`InvoiceSnapshot` for billing)
 - `lib/formatDate.ts` - `formatIST()` for timestamp display, `todayIST()`/`dateIST()` (YYYY-MM-DD) for comparing/grouping against DATE columns without UTC/local off-by-one bugs
 
-## Outstanding Manual Steps (run this next!)
+## Outstanding Manual Steps
 
-`database.sql` is appended-to incrementally, and **not every section has been confirmed run against the live Supabase project yet**. If resuming this project in a new session, check this first — the app's code assumes all of it is applied, and things will fail confusingly (missing column errors) otherwise.
+**Nothing pending.** As of the latest session, the entire `database.sql` file — including the guest occupancy + ID capture migration and the per-org `organizations.currency` column (the final appended section) — is confirmed deployed against the live Supabase project.
 
-**Confirmed deployed** (per explicit user confirmation / a working screenshot during the session that built them): everything through roughly line 656 of `database.sql` — the Phase 2 auth/audit base, the TIMESTAMPTZ fix, the check-in/check-out room-sync trigger, the maintenance/housekeeping room-sync trigger, the itemized folio (`reservation_charges`) + items catalog, and the richer `audit_logs.summary`/`details` columns + `log_reservation_charge_audit()` trigger.
-
-**Not confirmed deployed** — run these two sections (from the comment `-- Fix: status-change activity...` near line 656, through the end of the file) in the Supabase SQL editor before relying on:
-1. The room-number-in-details fix to `log_reservation_audit()` (cosmetic only — Checked In/Out entries showing the room number).
-2. **The guest occupancy + ID capture migration** — `room_types.extra_guest_fee`, `reservations.guest_count`/`guest_id_type`/`guest_id_number`, the new `reservation_guests` table + RLS, and the matching `log_reservation_audit()` patch. **`CheckInDialog` and `ReservationGuests` will error without this** — it's the last feature built this session and hasn't been exercised against a live database yet.
-
-`database.sql` sections are **not safely re-runnable** as a whole (`ALTER TABLE ... ADD COLUMN` and `CREATE TABLE` aren't idempotent here — no `IF NOT EXISTS`), so don't just re-paste the entire file. Run the specific pending section(s) only, and if something errors because it was already applied, that's the signal it's already done.
+When you **add** a new migration in a future session, remember the pattern that has held throughout: `database.sql` is appended-to incrementally and is **not safely re-runnable** as a whole (`ALTER TABLE ... ADD COLUMN` / `CREATE TABLE` aren't idempotent here — no `IF NOT EXISTS`). Run only the new section in the Supabase SQL editor; if it errors because it was already applied, that's the signal it's already done. Symptom of a forgotten migration is a confusing "column does not exist" error in the browser console.
 
 ## Customization Points
 
@@ -176,17 +206,20 @@ Later: Add client-specific features in:
 ## Database Structure (Simplified)
 
 ```
-organizations (tenants)
+organizations (tenants — incl. currency)
   ├── users (staff — id IS auth.users.id)
   ├── rooms (inventory)
   │   └── room_types (classifications, incl. extra_guest_fee)
   ├── reservations (bookings — incl. guest_count, guest_id_type/number)
   │   ├── audit_logs (create/update/delete trail, entity_type-scoped)
   │   ├── reservation_charges (folio: itemized costs, add/remove only)
-  │   └── reservation_guests (additional occupants beyond the lead guest)
+  │   ├── reservation_guests (additional occupants beyond the lead guest)
+  │   ├── payments (money received; add/remove only, negative = refund)
+  │   └── invoices (immutable issued documents; snapshot JSONB, void not delete)
   ├── items (priced catalog for quick folio charges)
   ├── staff_schedules (shifts)
-  └── maintenance_logs (tracking)
+  ├── maintenance_logs (tracking)
+  └── invoice_counters (per-(org, month) sequence for invoice numbers)
 ```
 
 All foreign keys cascade on delete (except `audit_logs.entity_id`, deliberately unlinked so it survives deletion). All queries include `org_id` filter, enforced by RLS.
@@ -234,11 +267,10 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 
 - ❌ No role-based enforcement — `users.role` is UI-only, not RLS-enforced (see Multi-Tenancy Model above)
 - ❌ No password-reset / forgot-password UI
-- ❌ No search/filter on the Reservations table (fine at current data volume)
 - ❌ No guest self-service booking
 - ❌ No payment processing
 - ❌ No integrations (OTA, email, SMS)
-- ❌ No occupancy/ADR/RevPAR reporting — dashboard shows raw revenue only, and that figure doesn't include folio charges
+- ❌ No occupancy/ADR/RevPAR reporting — dashboard shows revenue + outstanding balance (now folio-inclusive, Billing Phase D) but no ADR/RevPAR/occupancy KPIs
 - ❌ No guest profiles / repeat-guest recognition — every reservation stores a fresh `guest_name`/`email`/`phone`, no persistent guest entity across stays
 - ❌ No visual room/date availability chart ("tape chart") — staff infer availability from the reservations table + the booking wizard's overlap check
 - ❌ No mobile app
@@ -257,14 +289,19 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 - [x] Maintenance tracking UI
 - [x] Advanced room status history (activity log summary/details + calendar filter)
 
+### Phase 2.5 — done this session
+- [x] Reservation search/filter (search box + status filter tabs)
+- [x] Reservations mobile card layout (stacked cards below `md`)
+- [x] Per-org currency setting
+- [x] Styled confirm/alert dialog (replaced native `window.confirm`/`alert`)
+- [x] lucide-react icon set (replaced decorative emoji)
+
 ### Phase 2.5 candidates (raised, not yet built)
 - [ ] Guest profiles / repeat-guest recognition
-- [ ] Occupancy/ADR/RevPAR dashboard KPIs (and make revenue figures include folio charges)
+- [ ] Occupancy/ADR/RevPAR dashboard KPIs (revenue figures already include folio charges + an outstanding-balance card, Billing Phase D)
 - [ ] Visual room/date availability chart
 - [ ] Role-based RLS enforcement
 - [ ] Password-reset flow
-- [ ] Reservation search/filter
-- [ ] Reservations mobile card layout — below `md`, render the reservations list (and its Folio/Guests/History expanders) as stacked cards instead of the horizontally-scrolling table, so phone users don't side-scroll a 7-column table + wide expand panels
 
 ### Phase 3: Public Features
 - [ ] Guest booking portal
@@ -312,7 +349,7 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 **Fix a bug:**
 1. Reproduce with specific org_id
 2. Check browser console for errors
-3. Verify Supabase tables exist (see Outstanding Manual Steps above — this is the most likely cause of a "column does not exist" error right now)
+3. Verify Supabase tables/columns exist (a "column does not exist" error means a `database.sql` section wasn't run — see Outstanding Manual Steps; currently nothing is pending, but this is the usual cause when it happens)
 4. Check org_id filter is applied
 
 **Deploy:**
@@ -335,5 +372,5 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 
 ---
 
-**Last Updated**: 2026-07-03 (content), session work through mobile/responsive pass (hamburger nav + viewport-safe tables/headers/modals)
+**Last Updated**: 2026-07-03 (content), UX polish pass — per-org currency (`lib/currency.ts`), reservation search/filter, styled confirm/alert dialog (`lib/ConfirmDialog.tsx`), lucide-react icons, and the Reservations mobile card layout. All `database.sql` migrations confirmed deployed.
 **Maintained By**: Primary developer + 1 co-developer

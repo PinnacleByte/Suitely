@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Room, RoomType, MaintenanceLog } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
+import { useConfirm } from '@/lib/ConfirmDialog'
 
 const PRIORITY_BADGE: Record<MaintenanceLog['priority'], string> = {
   high: 'bg-red-500/20 text-red-300',
@@ -38,6 +39,7 @@ const emptyMaintenanceForm: MaintenanceForm = {
 }
 
 export default function HousekeepingPage() {
+  const { confirm } = useConfirm()
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
   const [logs, setLogs] = useState<MaintenanceLog[]>([])
@@ -171,7 +173,13 @@ export default function HousekeepingPage() {
   }
 
   const deleteLog = async (log: MaintenanceLog) => {
-    if (!confirm(`Delete the maintenance issue "${log.title}"?`)) return
+    const ok = await confirm({
+      title: 'Delete maintenance issue?',
+      message: `"${log.title}" will be permanently removed.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
 
     setBusyId(log.id)
     const { error: deleteError } = await supabase

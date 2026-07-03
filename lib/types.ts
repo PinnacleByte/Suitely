@@ -2,6 +2,7 @@ export type Organization = {
   id: string
   name: string
   slug: string
+  currency: string
   created_at: string
 }
 
@@ -71,6 +72,55 @@ export type ReservationCharge = {
   description: string
   amount: number
   category: 'service' | 'damage' | 'discount' | 'tax' | 'other'
+  created_at: string
+}
+
+// Money received against a reservation. Additive alongside the folio:
+// amount owed is (total_price + SUM(reservation_charges.amount)); amount
+// paid is SUM(payments.amount). A negative amount is a refund. Add/remove
+// only, mirroring ReservationCharge.
+export type Payment = {
+  id: string
+  org_id: string
+  reservation_id: string
+  amount: number
+  method: 'cash' | 'card' | 'upi' | 'bank_transfer' | 'other'
+  note: string | null
+  paid_at: string
+  created_at: string
+}
+
+// The frozen contents of an invoice, captured at issue time so the printed
+// document never changes if the underlying reservation/charges/currency are
+// later edited. `currency` is the org's currency code at issue time.
+export type InvoiceSnapshot = {
+  guest_name: string
+  room_number: string
+  check_in_date: string
+  check_out_date: string
+  currency: string
+  lines: { description: string; amount: number }[]
+  subtotal: number
+  tax_total: number
+  total: number
+  amount_paid: number
+  balance_due: number
+  issued_at: string
+}
+
+// An immutable billing document. Issued manually from the folio; a mistake
+// is voided (status change), never deleted. See BILLING_PLAN.md Phase B.
+export type Invoice = {
+  id: string
+  org_id: string
+  reservation_id: string
+  invoice_number: string
+  status: 'issued' | 'paid' | 'void'
+  snapshot: InvoiceSnapshot
+  subtotal: number
+  tax_total: number
+  total: number
+  issued_at: string
   created_at: string
 }
 

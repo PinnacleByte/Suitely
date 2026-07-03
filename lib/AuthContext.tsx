@@ -48,6 +48,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setProfile(userProfile)
       if (userProfile) {
         localStorage.setItem('orgId', userProfile.org_id)
+
+        // Mirror the org's currency into localStorage so money can be
+        // formatted anywhere without threading the org through props
+        // (see lib/currency.ts) — same pattern as orgId.
+        const { data: orgRow } = await supabase
+          .from('organizations')
+          .select('currency')
+          .eq('id', userProfile.org_id)
+          .single()
+
+        if (active && orgRow?.currency) {
+          localStorage.setItem('currency', orgRow.currency)
+        }
       }
       setLoading(false)
     }
@@ -72,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     await supabase.auth.signOut()
     localStorage.removeItem('orgId')
+    localStorage.removeItem('currency')
   }
 
   return (

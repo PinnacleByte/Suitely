@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { Reservation, RoomType } from '@/lib/types'
+import { formatMoney } from '@/lib/currency'
 
 const MS_PER_DAY = 1000 * 60 * 60 * 24
 const nightsBetween = (start: string, end: string) =>
@@ -11,7 +12,7 @@ const nightsBetween = (start: string, end: string) =>
 
 const STEP_LABELS = ['Occupancy', 'Guest IDs', 'Review']
 
-const money = (n: number) => `$${n.toFixed(2)}`
+const money = formatMoney
 
 type GuestSlot = { name: string; id_type: string; id_number: string }
 

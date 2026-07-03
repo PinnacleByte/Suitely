@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import { ConciergeBell, CalendarDays, Users, BedDouble } from 'lucide-react'
 
 export default function Home() {
   const [showSetupMessage, setShowSetupMessage] = useState(false)
@@ -16,7 +17,7 @@ export default function Home() {
       >
         <div className="bg-gray-900/80 border border-gray-800 rounded-lg shadow-lg shadow-black/40 p-8 backdrop-blur">
           <h1 className="text-3xl sm:text-4xl font-bold text-white mb-4 flex items-center gap-3">
-            <span>🛎️</span> Suitely
+            <ConciergeBell className="w-8 h-8 text-indigo-400" /> Suitely
           </h1>
           <p className="text-xl text-gray-400 mb-8">
             Manage reservations, staff, and operations with ease.
@@ -24,24 +25,24 @@ export default function Home() {
 
           <div className="grid md:grid-cols-3 gap-6 mb-8">
             <div className="bg-blue-500/10 border border-blue-500/20 p-6 rounded-lg">
-              <h3 className="text-lg font-semibold text-blue-300 mb-2">
-                📅 Reservations
+              <h3 className="text-lg font-semibold text-blue-300 mb-2 flex items-center gap-2">
+                <CalendarDays className="w-5 h-5" /> Reservations
               </h3>
               <p className="text-blue-200/70">
                 Manage guest bookings, check-ins, and check-outs
               </p>
             </div>
             <div className="bg-green-500/10 border border-green-500/20 p-6 rounded-lg">
-              <h3 className="text-lg font-semibold text-green-300 mb-2">
-                👥 Staff Management
+              <h3 className="text-lg font-semibold text-green-300 mb-2 flex items-center gap-2">
+                <Users className="w-5 h-5" /> Staff Management
               </h3>
               <p className="text-green-200/70">
                 Schedule shifts and manage your team
               </p>
             </div>
             <div className="bg-purple-500/10 border border-purple-500/20 p-6 rounded-lg">
-              <h3 className="text-lg font-semibold text-purple-300 mb-2">
-                🏠 Room Management
+              <h3 className="text-lg font-semibold text-purple-300 mb-2 flex items-center gap-2">
+                <BedDouble className="w-5 h-5" /> Room Management
               </h3>
               <p className="text-purple-200/70">
                 Track room availability and maintenance

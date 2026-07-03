@@ -1,6 +1,7 @@
 'use client'
 
 import { Item } from '@/lib/types'
+import { formatMoney } from '@/lib/currency'
 
 // Presentational item picker: a grid of catalog items with a quantity
 // stepper each. Shared between the checkout wizard and the Folio panel's
@@ -32,7 +33,7 @@ export default function ItemGrid({
             }`}
           >
             <p className="font-semibold text-gray-100 text-sm truncate">{item.name}</p>
-            <p className="text-xs text-gray-400 mb-2">${Number(item.price).toFixed(2)}</p>
+            <p className="text-xs text-gray-400 mb-2">{formatMoney(Number(item.price))}</p>
             <div className="flex items-center justify-between">
               <button
                 type="button"

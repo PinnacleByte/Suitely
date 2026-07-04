@@ -15,6 +15,7 @@
 - **Auth**: Supabase Auth (email/password) — one shared `/login` page for both hotel admins and staff
 - **Theme**: Dark mode only (no light mode/toggle)
 - **Hosting**: Vercel (Next.js native)
+- **PWA**: Installable web app (web app manifest + a hand-rolled service worker) — see [PWA / Installable](#pwa--installable)
 - **Free tier**: No paid services yet
 
 ## Architecture
@@ -143,6 +144,15 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - **Modals** (`CheckInDialog`/`CheckoutDialog`, and the `ConfirmDialog`) are `w-full max-w-lg`/`max-w-sm` on a `px-4` backdrop with `max-h-[85vh] overflow-y-auto`; the `QuickCheckInOut` dropdowns are `w-80 max-w-[calc(100vw-1.5rem)]` so they never exceed a narrow viewport.
 - The old rough edge (Folio/Guests/History expanders side-scrolling inside the Reservations table on a phone) is **resolved** — the mobile card layout renders those panels full-width inside each card.
 
+### PWA / Installable
+Suitely is an installable **Progressive Web App** — staff can "Add to Home Screen" on Android/iOS and run it in a standalone, full-screen window (no browser chrome), instead of a native app. Chosen over a native/React Native build deliberately: for a CRUD dashboard the bottleneck is the Supabase round-trip, not the render layer, so a native wrapper wouldn't be faster — and a second codebase isn't worth it for a 2-person team. **Hand-rolled, no plugin** (`next-pwa`/Workbox): Next 16.2 is new enough that PWA plugins lag it, and the SW logic needed here is tiny.
+- **`app/manifest.ts`** — Next's typed metadata route; served at `/manifest.webmanifest`. `display: standalone`, `start_url: /dashboard`, dark `background_color`/`theme_color` (`#09090f`, matching `globals.css`), and the icon set. iOS ignores parts of the manifest, so `app/layout.tsx`'s `metadata` also sets `appleWebApp` + `icons.apple`, and `viewport` sets `themeColor`.
+- **`public/sw.js`** — the service worker. **Network-first** for page navigations (falls back to a cached shell, then `/offline` when the network is unreachable); **cache-first** for immutable static assets (`/_next/static/`, `/icons/`). **Critical rule: it never intercepts non-GET requests or any cross-origin (i.e. Supabase) request** — those always hit the network, so auth tokens and live data are never served stale. Cache is versioned (`suitely-v1`); **bump `CACHE_VERSION` when changing SW/caching behavior** so old caches purge on deploy.
+- **`components/ServiceWorkerRegister.tsx`** — a tiny `"use client"` component (mounted once in `app/layout.tsx`) that registers `/sw.js` on `window.load`. No-op during SSR / on unsupported browsers. SW registration requires HTTPS (or localhost) — Vercel is HTTPS, so production is covered.
+- **`app/offline/page.tsx`** — the offline fallback the SW serves when a navigation fails with nothing cached.
+- **`public/icons/`** — app icons (`icon-192`, `icon-512`, `icon-maskable-512`, `apple-touch-icon`). Currently a **placeholder** "S" mark on the dark theme (generated with `sharp` from an inline SVG); swap the four PNGs at the same sizes to rebrand — no code change needed.
+- **In dev** (`npm run dev`) the SW also registers and caches; if local assets look stale, DevTools → Application → Service Workers → *Unregister* + hard reload. Production is unaffected.
+
 ## Key Files
 
 ### Database
@@ -188,6 +198,14 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - `lib/printInvoice.ts` - `printInvoice(invoice)` — renders an invoice's frozen snapshot to a print window (shared by folio + invoices list)
 - `lib/types.ts` - TypeScript interfaces for all entities (`Organization` carries `currency`; `Payment`, `Invoice`/`InvoiceSnapshot` for billing)
 - `lib/formatDate.ts` - `formatIST()` for timestamp display, `todayIST()`/`dateIST()` (YYYY-MM-DD) for comparing/grouping against DATE columns without UTC/local off-by-one bugs
+
+### PWA
+- `app/manifest.ts` - web app manifest (served at `/manifest.webmanifest`); installable/standalone config
+- `app/offline/page.tsx` - offline fallback page served by the service worker
+- `public/sw.js` - service worker (network-first pages, cache-first static, never touches Supabase/non-GET)
+- `components/ServiceWorkerRegister.tsx` - registers `/sw.js` on load (mounted in `app/layout.tsx`)
+- `public/icons/` - app icons (192 / 512 / maskable-512 / apple-touch); placeholder art, swap to rebrand
+- `app/layout.tsx` - also carries the PWA `metadata` (`manifest`, `appleWebApp`, `icons.apple`) + `viewport.themeColor`
 
 ## Outstanding Manual Steps
 
@@ -371,11 +389,11 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 
 ## Git Strategy
 - Commit often with descriptive messages
-- Branch for new features (feature/name)
 - Keep `main` deployable
 - Don't commit `.env.local` (use .env.local.example)
+- **Push preference (owner's standing instruction):** when the owner says "push to git," **commit whatever is currently modified and push straight to `main`** — do **not** create a feature branch or open a PR, and do not ask which files. Vercel auto-deploys from `main`, which is the intended flow. Still exclude obviously-unrelated junk (e.g. `.env.local`, stray scratch files) and use a descriptive commit message. (This overrides the generic "branch first on the default branch" default.)
 
 ---
 
-**Last Updated**: 2026-07-03 (content) — reservations restructured into a lean list + a per-booking **detail page** (`/dashboard/reservations/[id]`) hosting the Folio/Guests/History tabs (deep billing work moved off the table); **dashboard revamped** into a front-desk-first board (compact glance strip with occupancy, arrivals/departures worklist as the hero, Quick Actions removed, Financials gated to admin/manager via `users.role`). No schema changes this session — no new migrations. Prior pass: per-org currency (`lib/currency.ts`), reservation search/filter, styled confirm/alert dialog (`lib/ConfirmDialog.tsx`), lucide-react icons, Reservations mobile card layout. All `database.sql` migrations confirmed deployed.
+**Last Updated**: 2026-07-03 (content) — **PWA support** added (installable web app: `app/manifest.ts`, `public/sw.js`, `components/ServiceWorkerRegister.tsx`, `app/offline/page.tsx`, placeholder `public/icons/`, plus PWA `metadata`/`viewport` in `app/layout.tsx`) — see [PWA / Installable](#pwa--installable). No schema changes — no new migrations. Same session prior: reservations restructured into a lean list + a per-booking **detail page** (`/dashboard/reservations/[id]`) hosting the Folio/Guests/History tabs; **dashboard revamped** into a front-desk-first board (glance strip with occupancy, arrivals/departures worklist as the hero, Quick Actions removed, Financials gated to admin/manager via `users.role`). Prior pass: per-org currency (`lib/currency.ts`), reservation search/filter, styled confirm/alert dialog (`lib/ConfirmDialog.tsx`), lucide-react icons, Reservations mobile card layout. All `database.sql` migrations confirmed deployed.
 **Maintained By**: Primary developer + 1 co-developer

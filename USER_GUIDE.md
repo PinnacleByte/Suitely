@@ -34,6 +34,17 @@ Go to `/login`, enter your email and password, and you'll land on the dashboard.
 
 ---
 
+## Install It On Your Phone 📱
+
+Suitely can be installed to your phone's home screen and run full-screen, just like a regular app — no app store, no download. It's the same app either way; installing just gives you an icon and a cleaner, full-screen window.
+
+- **Android (Chrome):** open Suitely in Chrome, then tap the **Install app** prompt if it appears, or open the menu (⋮) → **Add to Home screen** → **Install**.
+- **iPhone/iPad (Safari):** open Suitely in **Safari** (this won't work in Chrome on iOS), tap the **Share** button, then **Add to Home Screen**.
+
+After that, tap the Suitely icon on your home screen to open it. You still log in the same way, and you'll need an internet connection to see live data — if you lose signal mid-use, you'll see a simple "You're offline" screen until it's back.
+
+---
+
 ## Dashboard
 
 **Location:** Home page after login

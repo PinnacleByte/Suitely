@@ -17,6 +17,7 @@ Manage reservations, check-in/check-out, housekeeping, guest folios, and staff s
 - **📊 Dashboard** - Live room status, today's arrivals/departures (actionable, not just informational), revenue snapshot, staff on shift
 - **🔒 Multi-Tenant** - Support multiple hotels with one codebase, isolated via Row-Level Security
 - **🌙 Dark Mode** - Dark theme throughout, with subtle animations
+- **📱 Installable (PWA)** - Add to your phone's home screen and run it full-screen like a native app — no app store, works on Android & iOS
 
 ## Quick Start 🚀
 
@@ -73,6 +74,7 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 - **Backend**: Supabase (PostgreSQL), REST API
 - **Auth**: Supabase Auth (email/password) — shared login for hotel admins and staff
 - **Hosting**: Vercel (recommended)
+- **PWA**: Installable (web app manifest + service worker), no plugin
 
 ## Project Structure
 
@@ -183,6 +185,15 @@ Creating this reservation while signed in is automatically recorded in the audit
 - Netlify
 - AWS Amplify
 - Self-hosted on any VPS
+
+### Install on Your Phone 📱
+
+Suitely is a **Progressive Web App**, so staff can install it to the home screen and run it full-screen — no app store needed. Requires HTTPS (Vercel provides it automatically; `localhost` also works in dev).
+
+- **Android (Chrome):** open the site → tap the **Install app** prompt, or menu (⋮) → **Add to Home screen**.
+- **iOS (Safari):** open the site → **Share** → **Add to Home Screen**. (Must be Safari — iOS never auto-prompts.)
+
+The app icon lives in `public/icons/` (currently a placeholder — swap the PNGs at the same sizes to rebrand). No code change required.
 
 ## Database Schema
 

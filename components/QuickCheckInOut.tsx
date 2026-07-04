@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { Reservation, Room } from '@/lib/types'
 import { todayIST } from '@/lib/formatDate'
 import CheckInDialog from '@/components/CheckInDialog'
@@ -25,6 +26,8 @@ export default function QuickCheckInOut() {
   useEffect(() => {
     loadData()
   }, [])
+
+  useRealtimeRefresh(['reservations', 'rooms'], () => loadData())
 
   const loadData = async () => {
     const orgId = localStorage.getItem('orgId')

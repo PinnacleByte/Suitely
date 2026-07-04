@@ -24,13 +24,21 @@
 - **Row-Level Security (RLS)**: Supabase policies isolate data per tenant via `current_org_id()`, derived from the authenticated user's `users` row (`auth.uid()`)
 - **Organization storage**: Hotel info saved in `organizations` table
 - **Org ID in localStorage**: Tracks which hotel the user is using (populated from the logged-in user's profile, not set manually)
-- **No role enforcement in RLS**: `users.role` (admin/manager/staff) is captured and shown in the UI, but every RLS policy only checks org membership — any authenticated org member can perform any write (delete a reservation, add a folio discount, delete another staff member's schedule). Deliberate known gap, not an oversight. `role` now drives exactly **one UI decision** — hiding the dashboard's Financials section from `staff` (see Dashboard Widgets) — but that is presentation only; it hides the widget, not the data, so it is not a security boundary.
+- **Role-based RLS (admin/manager/staff)** — this is now a *real, DB-enforced* security boundary, not UI-only (it used to be; that changed when `database.sql` was rebuilt into a clean role-aware schema). A second helper `current_user_role()` (SECURITY DEFINER, parallels `current_org_id()`) drives per-table write policies:
+  - **Reads**: any authenticated org member can `SELECT` every table in their org (unchanged — role never restricts reads; keeps all dashboard aggregates/folio totals working).
+  - **Staff** can write: reservations (book/edit/delete), `reservation_charges`, `reservation_guests`, `payments`, `maintenance_logs` (housekeeping ops), and **issue** invoices. Staff mark rooms clean via the `mark_room_clean()` RPC (SECURITY DEFINER) since they have no direct `rooms` write grant.
+  - **Manager** adds: `rooms`/`room_types` (inventory config), `users`/`staff_schedules` (staff management), and **voiding** invoices (`invoices` UPDATE).
+  - **Admin** adds: `items` catalog, and `organizations` UPDATE (currency/settings).
+  - Room-status sync on check-in/out and maintenance still works for staff because those triggers are **SECURITY DEFINER** (they update `rooms` as owner, bypassing the staff caller's lack of a `rooms` grant) — same reason the audit triggers can write `audit_logs`.
+  - **UI gating mirrors the policies** (so staff never see a button that would 403): Rooms CRUD (`canManageRooms`), Items CRUD (`canManageItems`, admin-only), Settings currency (admin-only), staff edit/delete (`canManageStaff`), invoice Void (`canVoidInvoice`), and the dashboard Financials widget. The UI gate is convenience; **RLS is the actual boundary**.
+  - **One thing RLS can't express**: "staff may change a reservation's status but not edit its guest fields" — both are `UPDATE reservations`, and a policy can't compare OLD vs NEW columns. Since staff are allowed full reservation edit/delete anyway, this is moot here; noted in case the model tightens later.
 
 ### Auth Model
 - `users.id` **is** the Supabase Auth `auth.users.id` (not a separate directory row) — one real login per staff member/admin.
 - **Hotel admin**: created via the `/setup` wizard (admin account first, then the hotel/org, since RLS requires an authenticated user to insert into `organizations`).
 - **Staff**: provisioned by an admin/manager from `/dashboard/staff`, via `app/api/staff/create` using the Supabase **service role key** server-side (client-side `signUp` would replace the admin's own session).
 - Route protection is a client-side guard in `app/dashboard/layout.tsx` (no middleware) — the real security boundary is RLS, not the guard.
+- **`lib/AuthContext.tsx` ignores same-user auth re-emits** (important, fixed 2026-07-05): Supabase's `onAuthStateChange` fires again on tab-focus/token-refresh. It used to `setLoading(true)` + refetch on *every* event, which made the layout's `if (loading) …` guard unmount the whole dashboard — wiping any in-progress form state whenever the user tabbed away and back (e.g. to copy an ID number from email mid-booking). It now tracks the last-loaded user id (`lastUserId`/`initialized` refs) and only reloads on an actual sign-in/out/switch, not on refreshes. Don't reintroduce an unconditional `setLoading(true)` in that listener.
 - **No password-reset UI** — Supabase Auth supports it, but there's no frontend for it yet. A locked-out user currently needs manual intervention via the Supabase dashboard (Authentication → Users).
 
 ### Audit Trail
@@ -95,6 +103,14 @@ Both directions are full multi-step wizard dialogs, not one-click actions — ev
 - **`lib/ConfirmDialog.tsx`** is a dark-themed, promise-based replacement for the browser's native `window.confirm`/`window.alert`. `ConfirmProvider` is mounted once in `app/dashboard/layout.tsx`; any dashboard page calls `const { confirm, alert } = useConfirm()` and awaits it: `if (!(await confirm({ title, message, confirmLabel, danger }))) return`.
 - Replaced every native dialog in the dashboard (delete reservation/room/room-type/maintenance-issue/item, and the reservation delete-error alert). `danger: true` renders a red confirm button for destructive actions. New destructive actions should use this, not `window.confirm`.
 
+### Shared-Terminal Identity Confirmation (Stage 4)
+The front desk typically leaves **one shared session** logged in all shift, so the audit trail's `auth.uid()` actor is the *terminal*, not the person who acted. To fix accountability, **five actions require the acting staffer to confirm who they are** first: **booking, check-in, check-out, recording a payment, and issuing an invoice**.
+- **`lib/IdentityConfirm.tsx`** — `IdentityConfirmProvider` (mounted in `app/dashboard/layout.tsx`, alongside `ConfirmProvider`) + a promise-based `useIdentityConfirm()`. A call site does `const actor = await confirmIdentity({ action, entityId }); if (!actor) return`. The dialog shows a **staff-name dropdown + password**; it's a gate — a falsy result (cancel or wrong password) aborts the action.
+- **`app/api/confirm-identity/route.ts`** — verifies the password **server-side** on a **throwaway** anon client (`signInWithPassword` then immediate `signOut`), so the browser's shared session is never touched. The actor is derived from the **verified email** (not a client-supplied id), so you can't pin an action on a colleague without their password. On success it writes an `audit_logs` row with `action = 'confirm'`, `entity_type = 'confirmation'`, `actor_user_id`/`actor_name` = the verified staffer, and `summary` = `"<Action> authorized"`.
+- **Attribution vs. the trigger**: the domain write still fires its normal audit trigger (attributed to the shared session user); the confirmation row sits alongside it, naming the *real* person — that pairing is what an investigation reads. `entity_id` = the reservation id for check-in/out/payment/invoice (so it threads into that booking's **History** tab), or the actor's id for a brand-new booking (surfaces in the org-wide **Activity Log** only, since no reservation id exists yet at confirm time).
+- **Wiring is inside the shared dialogs/handlers** — `CheckInDialog`/`CheckoutDialog` (covers every entry point: navbar, dashboard, list), the booking `handleSubmit` in `app/dashboard/reservations/page.tsx`, and `ReservationFolio`'s `handleAddPayment`/`handleIssueInvoice`. The History (`[id]` page) and Activity Log queries + badge maps were widened to include `entity_type = 'confirmation'` (indigo badges, summaries like "Check-out authorized").
+- **Known edge**: gate runs *before* the write, and logging happens *at* confirm time — so if the subsequent write fails, a stray "authorized" entry remains (rare; reads truthfully as "X authorized/attempted this"). Deliberately **always-on** for the five actions (no per-org toggle yet) — that was the explicit ask; a toggle is a future option.
+
 ### Housekeeping & Maintenance
 - `/dashboard/housekeeping` has two sections:
   - **Cleaning Queue**: every room with `status = 'cleaning'` (i.e., checked out and not yet turned around), with a one-click "Mark clean" → `available`, and a "Report issue" shortcut per room.
@@ -106,8 +122,17 @@ Both directions are full multi-step wizard dialogs, not one-click actions — ev
 1. User runs setup wizard → Creates their admin login, then the organization
 2. Organization ID stored in localStorage (via `lib/AuthContext.tsx` after login)
 3. All queries filter by `org_id` automatically, enforced again by RLS
-4. Every page fetches its own data independently on mount — there is no shared/global client state anywhere in the app (not even between the navbar's `QuickCheckInOut` and the page it's rendered on top of). This is consistent throughout, but means an action taken from one component doesn't refresh another component's already-loaded list.
+4. Every page still fetches its own data independently on mount — there is no shared/global client state (no context store, no SWR/React Query cache). What's changed: each independent fetcher now also calls `useRealtimeRefresh` (see Live Data Sync below) so it re-fetches when another component/tab writes to the same tables — the "another component's already-loaded list doesn't refresh" gap is fixed for realtime-covered tables, without introducing shared state.
 5. Future: Support multiple organizations per user account
+
+### Live Data Sync
+Every dashboard page/component that independently loads data also calls **`useRealtimeRefresh(tables, callback)`** (`lib/useRealtimeRefresh.ts`) right next to its mount-time `useEffect`. It opens one Supabase Realtime channel per call, subscribes to `postgres_changes` (`event: '*'`) on each named table filtered to `org_id=eq.<current org>`, and re-runs `callback` (the page's own loader, e.g. `loadData`) on any insert/update/delete — including writes from another browser tab/terminal, not just this session. This is what fixed the original symptom: the navbar's `QuickCheckInOut` (mounted once for the whole dashboard session in `app/dashboard/layout.tsx`, never remounted on navigation) previously never learned about a reservation created on the Reservations page; it now does.
+- **Requires org_id on the table** — every subscribed table has a direct `org_id` column (confirmed for all of them). `organizations` (its own `id` *is* the org id, no `org_id` column) and `invoice_counters` (internal sequence table, no UI reads it) are excluded on purpose — not subscribed anywhere.
+- **Required the Supabase-side toggle** noted in Outstanding Manual Steps above (now confirmed done) — the client-side subscription code has no way to detect that a table isn't in the `supabase_realtime` publication; it just never fires. If this bug pattern ("X doesn't update without a reload") resurfaces for a *new* table added later, check Database → Publications first before assuming the hook itself is broken.
+- **Also requires `REPLICA IDENTITY FULL`** on every subscribed table (set in `database.sql` right after the indexes). The subscription filters by `org_id` (a non-PK column) and the tables have RLS on; with the default replica identity, an UPDATE/DELETE only ships the primary key, so the `org_id` filter + RLS check can't be evaluated and those events are **silently dropped**. Symptom (hit 2026-07-05): creating a reservation synced live but **check-in/check-out (an UPDATE) and deletes did not** until reload. FULL ships the whole old row so UPDATE/DELETE sync too. If a future table is added to the realtime set, give it `REPLICA IDENTITY FULL` or its updates/deletes won't propagate.
+- Each caller passes its own loader wrapped in an arrow (`() => loadData()`), matching the existing codebase convention of calling not-yet-declared `const loadX = async () => {...}` functions from an earlier `useEffect` (see Lint Note) — deferred invocation avoids a temporal-dead-zone error regardless of declaration order.
+- Granularity is per-table-set, not per-row: e.g. `ReservationFolio` refetches its own reservation's charges/payments/invoices/items whenever *any* reservation's charges change org-wide, not just this one. Fine at current scale (matches the app's existing "no pagination, revisit if it grows" posture) — see Known Limitations.
+- Free-tier Supabase Realtime easily covers this app's scale (a handful of staff terminals per org) — no paid plan needed.
 
 ### Dashboard Widgets
 `app/dashboard/page.tsx` is a **front-desk-first operations board** — reorganized so a receptionist sees their worklist, not a wall of KPI cards. Layout top to bottom: date header → glance strip → arrivals/departures worklist → staff on shift → *(managers only)* financials. Order of importance drives the layout.
@@ -168,6 +193,7 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - `app/dashboard/settings/page.tsx` - Hub linking to Items, Invoices, Activity Log, Staff; also hosts the org **display-currency** picker
 - `app/dashboard/staff/page.tsx` - Staff members + scheduling
 - `app/api/staff/create/route.ts` - Service-role staff account provisioning
+- `app/api/confirm-identity/route.ts` - Server-side password verification + attribution logging for the shared-terminal identity confirmation (Stage 4)
 
 ### Components
 - `components/DashboardNav.tsx` - Top navigation bar
@@ -184,16 +210,28 @@ The whole dashboard is expected to hold the viewport on any device (verified dow
 - `lib/supabaseAdmin.ts` - Service-role client, lazy-loaded, server-only (`app/api/**` only)
 - `lib/AuthContext.tsx` - Session/profile React context (also mirrors `orgId` + `currency` into localStorage at login)
 - `lib/ConfirmDialog.tsx` - `ConfirmProvider` + `useConfirm()` — promise-based dark-themed confirm/alert (mounted in the dashboard layout)
+- `lib/IdentityConfirm.tsx` - `IdentityConfirmProvider` + `useIdentityConfirm()` — shared-terminal identity gate for the 5 accountable actions (see Shared-Terminal Identity Confirmation); pairs with `app/api/confirm-identity`
 - `lib/currency.ts` - `CURRENCIES` map + `formatMoney()` (optional `{ currency }` override for printing invoices in their frozen code); the single money-formatting helper for the whole app (per-org currency)
 - `lib/printInvoice.ts` - `printInvoice(invoice)` — renders an invoice's frozen snapshot to a print window (shared by folio + invoices list)
 - `lib/types.ts` - TypeScript interfaces for all entities (`Organization` carries `currency`; `Payment`, `Invoice`/`InvoiceSnapshot` for billing)
 - `lib/formatDate.ts` - `formatIST()` for timestamp display, `todayIST()`/`dateIST()` (YYYY-MM-DD) for comparing/grouping against DATE columns without UTC/local off-by-one bugs
+- `lib/useRealtimeRefresh.ts` - `useRealtimeRefresh(tables, callback)` — Supabase Realtime subscription hook that re-runs a page/component's own loader on org-scoped table changes (see Live Data Sync)
 
 ## Outstanding Manual Steps
 
-**Nothing pending.** As of the latest session, the entire `database.sql` file — including the guest occupancy + ID capture migration and the per-org `organizations.currency` column (the final appended section) — is confirmed deployed against the live Supabase project.
+**PENDING: run the rebuilt `database.sql` once.** `database.sql` was **rewritten from an append-only log into a single clean, re-runnable file** (role-based RLS defined inline per table). It now starts with a **destructive** `DROP TABLE IF EXISTS … CASCADE` reset block, so running the whole file wipes all app data and rebuilds the schema from scratch. This was a deliberate choice — the user confirmed the live DB held no important data. **After running it**, re-create the hotel via `/setup`. ⚠ The reset does **not** touch `auth.users`, so re-running `/setup` with the *same* admin email hits a "user already registered" error — either use a fresh email or delete the old login under Authentication → Users first. Until this file is run, the app still points at the *old* schema (no role enforcement), so role-based RLS + the `mark_room_clean()` RPC won't exist yet (symptom: "function mark_room_clean does not exist" on Housekeeping's Mark-clean, or staff able to do manager-only writes).
 
-When you **add** a new migration in a future session, remember the pattern that has held throughout: `database.sql` is appended-to incrementally and is **not safely re-runnable** as a whole (`ALTER TABLE ... ADD COLUMN` / `CREATE TABLE` aren't idempotent here — no `IF NOT EXISTS`). Run only the new section in the Supabase SQL editor; if it errors because it was already applied, that's the signal it's already done. Symptom of a forgotten migration is a confusing "column does not exist" error in the browser console.
+Because the file is now **fully re-runnable** (drops + recreates everything), the old "append only the new section" rule no longer applies — future schema changes edit this file in place and you re-run the whole thing (it's destructive, so only against disposable data; for a live hotel you'd instead write a separate additive migration). The `supabase_realtime` publication (enabled 2026-07-04 for all realtime tables, via Database → **Publications**) survives table drops? **No** — dropping a table removes it from the publication, so after the rebuild the Realtime toggles must be re-applied for every table in Live Data Sync's list.
+
+**Also part of the rebuilt file (2026-07-05): `REPLICA IDENTITY FULL`** on all subscribed tables (needed for UPDATE/DELETE realtime — see Live Data Sync). Running the whole file applies it; if you already ran an earlier copy without it, run just the block of `ALTER TABLE … REPLICA IDENTITY FULL;` statements once — it's non-destructive and safe on existing data.
+
+**Stage 4 (identity confirmation) needs one small migration (2026-07-05):** the `audit_logs.action` CHECK now allows `'confirm'`. A full re-run of `database.sql` includes it; to apply to an already-deployed DB **without** wiping data, run this once (non-destructive):
+```sql
+ALTER TABLE audit_logs DROP CONSTRAINT audit_logs_action_check;
+ALTER TABLE audit_logs ADD CONSTRAINT audit_logs_action_check
+  CHECK (action IN ('create', 'update', 'delete', 'confirm'));
+```
+Symptom if skipped: booking/check-in/out/payment/invoice fail at the confirm step with a `audit_logs_action_check` violation from `/api/confirm-identity`.
 
 ## Customization Points
 
@@ -265,12 +303,17 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 1. Create two orgs via `/setup` with two different admin logins
 2. Log in as each and verify data isolation (org A can't see org B's data)
 
+### PWA Service Worker — dev gotcha (important)
+The app ships a hand-rolled service worker (`public/sw.js`, registered by `components/ServiceWorkerRegister.tsx`) for PWA/offline support. It caches `/_next/static/` chunks **cache-first**. In **production** that's correct (chunk URLs are content-hashed/immutable). In **development** it was **poison**: dev chunk URLs are stable across rebuilds, so the SW kept serving *stale compiled JS* for the same URL — surviving dev-server restarts, `.next` deletion, and hard refreshes. Symptom (cost a lot of debugging on 2026-07-05): code edits genuinely on disk (verified by reading the file) simply **never reached the browser**; every change looked like a no-op.
+- **Fix in place**: `ServiceWorkerRegister.tsx` now registers the SW **only when `process.env.NODE_ENV === 'production'`**, and in dev actively `unregister()`s any existing SW and clears its caches. Don't revert that gate.
+- **If "my change isn't showing up" ever recurs in dev** and the file on disk is correct: it's the service worker. Clear it once via DevTools → Application → **Clear site data**, then reload (the currently-active SW serves the old bundle *including the old registration code*, so it must be cleared by hand once before the dev-gate can take over). A `.next` wipe + server restart alone will NOT fix it.
+
 ### Lint Note
 `npx eslint` currently reports a project-wide, pre-existing pattern in nearly every page/component: a `useEffect` calling a `loadData`-style function declared later in the same file (`react-hooks` "accessed before declared") plus two `setState`-in-effect warnings on the price auto-calc logic in `app/dashboard/reservations/page.tsx`. These predate this session's work and are consistent throughout the codebase (not something to "fix" incidentally while touching a file) — `npx tsc --noEmit` is the reliable signal for whether a change actually broke something.
 
 ## Known Limitations (Phase 2, honestly assessed)
 
-- ❌ No role-based enforcement — `users.role` is UI-only, not RLS-enforced; it now gates the dashboard Financials widget (presentation only, not a security boundary — see Multi-Tenancy Model above)
+- ✅ Role-based enforcement — `users.role` (admin/manager/staff) is now **RLS-enforced** at the DB level, not UI-only (see Multi-Tenancy Model above). UI gating mirrors it for UX.
 - ❌ No password-reset / forgot-password UI
 - ❌ No guest self-service booking
 - ❌ No payment processing
@@ -282,7 +325,7 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 - ❌ No client-specific customization yet
 - ❌ Every page loads its full table contents client-side with no pagination/date filtering (`.select('*').eq('org_id', orgId)` everywhere) — deliberately deferred (few clients right now), but the first thing to fix if that changes, especially the Activity Log and Reservations pages
 - ❌ Folio surcharges/credits are computed once at wizard-confirm time, not kept in sync if `guest_count` or dates are edited afterward
-- ❌ No shared/global client state — an action from one component (e.g. navbar quick check-in) doesn't refresh another already-rendered page's data
+- ❌ Still no shared/global client state (no context store, no cache) — but **the practical symptom is now fixed** via Realtime subscriptions (see Live Data Sync); each component still independently re-fetches its own data, just triggered by the DB change instead of only its own mutations. A gap remains for the *history* tab's lazy-loaded `audit_logs` query on the reservation detail page (`app/dashboard/reservations/[id]/page.tsx`), which isn't wired to realtime — it only loads once when the tab is first opened
 
 ## Next Phases
 
@@ -377,5 +420,5 @@ Note: `.env.local` changes require a dev server restart — Next.js doesn't hot-
 
 ---
 
-**Last Updated**: 2026-07-03 (content) — reservations restructured into a lean list + a per-booking **detail page** (`/dashboard/reservations/[id]`) hosting the Folio/Guests/History tabs (deep billing work moved off the table); **dashboard revamped** into a front-desk-first board (compact glance strip with occupancy, arrivals/departures worklist as the hero, Quick Actions removed, Financials gated to admin/manager via `users.role`). No schema changes this session — no new migrations. Prior pass: per-org currency (`lib/currency.ts`), reservation search/filter, styled confirm/alert dialog (`lib/ConfirmDialog.tsx`), lucide-react icons, Reservations mobile card layout. All `database.sql` migrations confirmed deployed.
+**Last Updated**: 2026-07-05 (content) — **4-stage access-control + accountability build**: (1) reservation guest **email optional**; (2) admins/managers **edit/delete staff**; (3) **`database.sql` rebuilt** into a clean re-runnable file with **real role-based RLS** (admin/manager/staff; `current_user_role()` helper + `mark_room_clean()` RPC); (4) **shared-terminal identity confirmation** — book/check-in/check-out/payment/invoice each require the acting staffer to confirm their password (`lib/IdentityConfirm.tsx` + `app/api/confirm-identity`), attributing the action to the verified person in the audit trail. Also this session: fixed **tab-switch data loss** (`AuthContext` same-user re-emit guard), **realtime UPDATE/DELETE sync** (`REPLICA IDENTITY FULL`), a **dev service-worker staleness** trap (SW now prod-only), folio/receipt/invoice display rework, and a full **docs refresh** (README/SETUP/TROUBLESHOOTING/USER_GUIDE). **⚠ Pending deploy**: re-run `database.sql` (or the small `audit_logs` CHECK migration) + re-enable Realtime Publications — see Outstanding Manual Steps.
 **Maintained By**: Primary developer + 1 co-developer

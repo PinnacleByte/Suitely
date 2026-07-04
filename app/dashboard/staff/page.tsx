@@ -3,16 +3,24 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { useAuth } from '@/lib/AuthContext'
+import { useConfirm } from '@/lib/ConfirmDialog'
 import { User, StaffSchedule } from '@/lib/types'
 
 export default function StaffPage() {
-  const { session } = useAuth()
+  const { session, profile } = useAuth()
+  const { confirm, alert } = useConfirm()
+  // UI-level gate only for now — real DB-level (RLS) enforcement of role
+  // permissions is a separate, larger change; this matches the app's
+  // existing pattern (e.g. the dashboard's Financials widget).
+  const canManageStaff = profile?.role === 'admin' || profile?.role === 'manager'
   const [staff, setStaff] = useState<User[]>([])
   const [schedules, setSchedules] = useState<StaffSchedule[]>([])
   const [loading, setLoading] = useState(true)
   const [showStaffForm, setShowStaffForm] = useState(false)
   const [showScheduleForm, setShowScheduleForm] = useState(false)
+  const [editingStaffId, setEditingStaffId] = useState<string | null>(null)
   const [staffError, setStaffError] = useState('')
   const [staffSubmitting, setStaffSubmitting] = useState(false)
   const [staffForm, setStaffForm] = useState<{
@@ -38,6 +46,8 @@ export default function StaffPage() {
   useEffect(() => {
     loadData()
   }, [])
+
+  useRealtimeRefresh(['users', 'staff_schedules'], () => loadData())
 
   const loadData = async () => {
     try {
@@ -97,6 +107,81 @@ export default function StaffPage() {
     }
   }
 
+  const openAddStaff = () => {
+    setEditingStaffId(null)
+    setStaffForm({ name: '', email: '', password: '', role: 'staff' })
+    setStaffError('')
+    setShowStaffForm(true)
+  }
+
+  const openEditStaff = (member: User) => {
+    setEditingStaffId(member.id)
+    setStaffForm({ name: member.name, email: member.email, password: '', role: member.role })
+    setStaffError('')
+    setShowStaffForm(true)
+  }
+
+  const closeStaffForm = () => {
+    setShowStaffForm(false)
+    setEditingStaffId(null)
+    setStaffError('')
+  }
+
+  // Name + role only — email is tied to the Supabase Auth account and
+  // changing it needs the admin API, out of scope for now.
+  const handleEditStaffSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingStaffId) return
+    setStaffError('')
+    setStaffSubmitting(true)
+
+    const { error: updateError } = await supabase
+      .from('users')
+      .update({ name: staffForm.name, role: staffForm.role })
+      .eq('id', editingStaffId)
+
+    setStaffSubmitting(false)
+    if (updateError) {
+      setStaffError(updateError.message)
+      return
+    }
+    closeStaffForm()
+    loadData()
+  }
+
+  const handleDeleteStaff = async (member: User) => {
+    if (member.id === profile?.id) {
+      await alert({
+        title: "Can't delete your own account",
+        message: 'Have another admin remove your account if needed.',
+      })
+      return
+    }
+    if (member.role === 'admin' && staff.filter((s) => s.role === 'admin').length <= 1) {
+      await alert({
+        title: "Can't delete the last admin",
+        message: 'Promote another staff member to admin first.',
+      })
+      return
+    }
+
+    const ok = await confirm({
+      title: `Delete ${member.name}?`,
+      message:
+        'This removes their access to the app immediately. This cannot be undone from here.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+
+    const { error: deleteError } = await supabase.from('users').delete().eq('id', member.id)
+    if (deleteError) {
+      await alert({ title: 'Failed to delete', message: deleteError.message })
+      return
+    }
+    loadData()
+  }
+
   const handleScheduleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     try {
@@ -154,22 +239,27 @@ export default function StaffPage() {
         <div className="mb-12">
           <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Staff Members</h2>
-            <button
-              onClick={() => setShowStaffForm(!showStaffForm)}
-              className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
-            >
-              {showStaffForm ? 'Cancel' : '+ Add Staff'}
-            </button>
+            {canManageStaff && (
+              <button
+                onClick={() => (showStaffForm ? closeStaffForm() : openAddStaff())}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
+              >
+                {showStaffForm ? 'Cancel' : '+ Add Staff'}
+              </button>
+            )}
           </div>
 
-          {showStaffForm && (
+          {showStaffForm && canManageStaff && (
             <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 mb-8">
               {staffError && (
                 <div className="mb-6 px-4 py-3 rounded-lg bg-red-500/10 text-red-300 border border-red-500/30">
                   {staffError}
                 </div>
               )}
-              <form onSubmit={handleStaffSubmit} className="grid md:grid-cols-2 gap-6">
+              <form
+                onSubmit={editingStaffId ? handleEditStaffSubmit : handleStaffSubmit}
+                className="grid md:grid-cols-2 gap-6"
+              >
                 <div>
                   <label className="block text-gray-300 font-semibold mb-2">
                     Name
@@ -184,36 +274,50 @@ export default function StaffPage() {
                     required
                   />
                 </div>
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-2">
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    value={staffForm.email}
-                    onChange={(e) =>
-                      setStaffForm({ ...staffForm, email: e.target.value })
-                    }
-                    className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="block text-gray-300 font-semibold mb-2">
-                    Temporary Password
-                  </label>
-                  <input
-                    type="text"
-                    value={staffForm.password}
-                    onChange={(e) =>
-                      setStaffForm({ ...staffForm, password: e.target.value })
-                    }
-                    placeholder="Share this with the staff member directly"
-                    className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
-                    minLength={6}
-                    required
-                  />
-                </div>
+                {editingStaffId ? (
+                  <div>
+                    <label className="block text-gray-300 font-semibold mb-2">Email</label>
+                    <input
+                      type="email"
+                      value={staffForm.email}
+                      disabled
+                      className="w-full px-4 py-2 bg-gray-800/50 border border-gray-800 rounded-lg text-gray-500"
+                    />
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-gray-300 font-semibold mb-2">
+                        Email
+                      </label>
+                      <input
+                        type="email"
+                        value={staffForm.email}
+                        onChange={(e) =>
+                          setStaffForm({ ...staffForm, email: e.target.value })
+                        }
+                        className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-gray-300 font-semibold mb-2">
+                        Temporary Password
+                      </label>
+                      <input
+                        type="text"
+                        value={staffForm.password}
+                        onChange={(e) =>
+                          setStaffForm({ ...staffForm, password: e.target.value })
+                        }
+                        placeholder="Share this with the staff member directly"
+                        className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
+                        minLength={6}
+                        required
+                      />
+                    </div>
+                  </>
+                )}
                 <div>
                   <label className="block text-gray-300 font-semibold mb-2">
                     Role
@@ -239,7 +343,13 @@ export default function StaffPage() {
                     disabled={staffSubmitting}
                     className="w-full px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition disabled:bg-gray-700"
                   >
-                    {staffSubmitting ? 'Adding...' : 'Add Staff Member'}
+                    {staffSubmitting
+                      ? editingStaffId
+                        ? 'Saving...'
+                        : 'Adding...'
+                      : editingStaffId
+                        ? 'Save Changes'
+                        : 'Add Staff Member'}
                   </button>
                 </div>
               </form>
@@ -266,6 +376,11 @@ export default function StaffPage() {
                     <th className="px-6 py-3 text-left text-gray-300 font-semibold">
                       Role
                     </th>
+                    {canManageStaff && (
+                      <th className="px-6 py-3 text-left text-gray-300 font-semibold">
+                        Actions
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -290,6 +405,24 @@ export default function StaffPage() {
                           {member.role}
                         </span>
                       </td>
+                      {canManageStaff && (
+                        <td className="px-6 py-3">
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => openEditStaff(member)}
+                              className="text-indigo-400 hover:text-indigo-300 text-sm font-semibold"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => handleDeleteStaff(member)}
+                              className="text-red-400 hover:text-red-300 text-sm font-semibold"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </motion.tr>
                   ))}
                 </tbody>

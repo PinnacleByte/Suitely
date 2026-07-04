@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { AuditLog } from '@/lib/types'
 import { formatIST, dateIST } from '@/lib/formatDate'
 import ActivityCalendar from '@/components/ActivityCalendar'
@@ -21,6 +22,12 @@ const SUMMARY_BADGE: Record<string, string> = {
   'Payment Removed': 'bg-orange-500/20 text-orange-300',
   'Refund Issued': 'bg-amber-500/20 text-amber-300',
   'Refund Removed': 'bg-orange-500/20 text-orange-300',
+  // Stage 4 shared-terminal identity confirmations
+  'Booking authorized': 'bg-indigo-500/20 text-indigo-300',
+  'Check-in authorized': 'bg-indigo-500/20 text-indigo-300',
+  'Check-out authorized': 'bg-indigo-500/20 text-indigo-300',
+  'Payment authorized': 'bg-indigo-500/20 text-indigo-300',
+  'Invoice authorized': 'bg-indigo-500/20 text-indigo-300',
 }
 const DEFAULT_BADGE = 'bg-gray-500/20 text-gray-300'
 
@@ -47,6 +54,8 @@ export default function ReservationActivityPage() {
     loadLogs()
   }, [])
 
+  useRealtimeRefresh(['audit_logs'], () => loadLogs())
+
   const loadLogs = async () => {
     try {
       const orgId = localStorage.getItem('orgId')
@@ -56,7 +65,7 @@ export default function ReservationActivityPage() {
         .from('audit_logs')
         .select('*')
         .eq('org_id', orgId)
-        .in('entity_type', ['reservation', 'reservation_charge', 'payment'])
+        .in('entity_type', ['reservation', 'reservation_charge', 'payment', 'confirmation'])
         .order('created_at', { ascending: false })
 
       setLogs((data as AuditLog[]) || [])

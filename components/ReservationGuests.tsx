@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { ReservationGuest } from '@/lib/types'
 
 type GuestForm = { name: string; id_type: string; id_number: string }
@@ -41,6 +42,8 @@ export default function ReservationGuests({
     loadGuests()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reservationId])
+
+  useRealtimeRefresh(['reservation_guests'], () => loadGuests())
 
   const loadGuests = async () => {
     setLoading(true)

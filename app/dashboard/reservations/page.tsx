@@ -4,9 +4,11 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { Reservation, Room, RoomType } from '@/lib/types'
 import { formatMoney } from '@/lib/currency'
 import { useConfirm } from '@/lib/ConfirmDialog'
+import { useIdentityConfirm } from '@/lib/IdentityConfirm'
 import CheckInDialog from '@/components/CheckInDialog'
 import CheckoutDialog from '@/components/CheckoutDialog'
 
@@ -71,6 +73,7 @@ const METHOD_LABEL: Record<(typeof PAYMENT_METHODS)[number], string> = {
 
 export default function ReservationsPage() {
   const { confirm, alert } = useConfirm()
+  const { confirmIdentity } = useIdentityConfirm()
   const [reservations, setReservations] = useState<Reservation[]>([])
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
@@ -103,6 +106,8 @@ export default function ReservationsPage() {
   useEffect(() => {
     loadData()
   }, [])
+
+  useRealtimeRefresh(['reservations', 'rooms', 'room_types'], () => loadData())
 
   // Auto-calculate total price from the selected room's type and length of stay.
   useEffect(() => {
@@ -292,6 +297,11 @@ export default function ReservationsPage() {
         setError('This room is already booked for some or all of the selected dates.')
         return
       }
+
+      // Shared-terminal accountability: the staffer confirms who they are
+      // before the booking is created (records responsibility in the audit log).
+      const actor = await confirmIdentity({ action: 'book' })
+      if (!actor) return
 
       const { data: created, error: insertError } = await supabase
         .from('reservations')
@@ -846,7 +856,7 @@ export default function ReservationsPage() {
                             </div>
                             <div>
                               <label className="block text-gray-300 font-semibold mb-2">
-                                Email
+                                Email <span className="text-gray-500 font-normal">(optional)</span>
                               </label>
                               <input
                                 type="email"
@@ -855,7 +865,6 @@ export default function ReservationsPage() {
                                   setFormData({ ...formData, guest_email: e.target.value })
                                 }
                                 className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
-                                required
                               />
                             </div>
                             <div>
@@ -1035,13 +1044,14 @@ export default function ReservationsPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-gray-300 font-semibold mb-2">Email</label>
+                    <label className="block text-gray-300 font-semibold mb-2">
+                      Email <span className="text-gray-500 font-normal">(optional)</span>
+                    </label>
                     <input
                       type="email"
                       value={editForm.guest_email}
                       onChange={(e) => setEditForm({ ...editForm, guest_email: e.target.value })}
                       className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100"
-                      required
                     />
                   </div>
                   <div>

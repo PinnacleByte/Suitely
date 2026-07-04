@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useIdentityConfirm } from '@/lib/IdentityConfirm'
 import { Reservation, Item } from '@/lib/types'
 import { todayIST } from '@/lib/formatDate'
 import { formatMoney } from '@/lib/currency'
@@ -43,6 +44,7 @@ export default function CheckoutDialog({
   onClose: () => void
   onCheckedOut: () => void
 }) {
+  const { confirmIdentity } = useIdentityConfirm()
   const [step, setStep] = useState(1)
   const [checkoutDate, setCheckoutDate] = useState(todayIST())
   const [items, setItems] = useState<Item[]>([])
@@ -91,6 +93,11 @@ export default function CheckoutDialog({
 
   const handleConfirm = async () => {
     setError('')
+
+    // Shared-terminal accountability: confirm who's checking the guest out.
+    const actor = await confirmIdentity({ action: 'check_out', entityId: reservation.id })
+    if (!actor) return
+
     setSubmitting(true)
 
     const { error: updateError } = await supabase

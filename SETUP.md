@@ -20,13 +20,15 @@
 3. Turn **off** "Confirm email" — Phase 1 has no email service, so sign-ups must return a usable session immediately. (If you can't find this toggle, use the dashboard's search/command palette and type "confirm email".)
 
 ### 4. Set Environment Variables
-1. In the project root, create `.env.local` file:
+1. In the project root, copy `.env.local.example` to `.env.local` and fill in:
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
+NEXT_PUBLIC_SETUP_ENABLED=true
 ```
-`SUPABASE_SERVICE_ROLE_KEY` powers staff account provisioning (`app/api/staff/create`) and must never be prefixed with `NEXT_PUBLIC_`.
+- `SUPABASE_SERVICE_ROLE_KEY` powers staff account provisioning (`app/api/staff/create`) and must never be prefixed with `NEXT_PUBLIC_`.
+- `NEXT_PUBLIC_SETUP_ENABLED` gates the public `/setup` wizard so it can't be left open in production. Set it to `true` to run first-time setup, then flip it back to `false` once your hotel exists.
 
 ### 5. Initialize Database
 1. In Supabase dashboard, go to **SQL Editor**
@@ -35,9 +37,16 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 4. Paste into the SQL editor and click **Run**
 5. Wait for tables to be created ✓
 
-**Resuming an existing project?** `database.sql` grows incrementally — new sections get appended as features are added, and not every section may have been run against your project yet. Check [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) for exactly what's pending before assuming everything is applied. Re-pasting the *entire* file isn't safe once some of it has already run (table/column creation isn't written to be re-run) — run only the missing section(s).
+`database.sql` is **self-contained and re-runnable**: it opens with a `DROP TABLE IF EXISTS … CASCADE` reset block, then recreates every table, index, RLS policy, trigger, and function — so running the whole file always gives you a clean, correct schema (including role-based RLS). ⚠ Because of the reset, **running it wipes all app data** — only do that against a project whose data you're willing to lose. It does **not** delete Supabase Auth accounts (`auth.users`); if you re-run setup with the same admin email you'll get a "user already registered" error, so either use a fresh email or delete the old login under **Authentication → Users** first.
 
-### 6. Start Development Server
+### 6. Enable Realtime (live sync)
+The app uses Supabase Realtime so a booking/check-in on one screen shows up on the others without a reload. Turn it on:
+1. Supabase dashboard → **Database → Publications**
+2. Open the `supabase_realtime` publication and add the app tables (`reservations`, `rooms`, `room_types`, `reservation_charges`, `payments`, `staff_schedules`, `users`, `maintenance_logs`, `items`, `invoices`, `reservation_guests`, `audit_logs`).
+
+The schema already sets `REPLICA IDENTITY FULL` on those tables (so *updates and deletes* propagate, not just inserts). If you ever drop/recreate tables, remember the publication membership is lost and must be re-added.
+
+### 7. Start Development Server
 ```bash
 npm run dev
 ```
@@ -53,16 +62,18 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 .
 ├── app/                          # Next.js pages
 │   ├── dashboard/                 # Main dashboard pages (auth-guarded)
-│   │   ├── reservations/          # Reservation management + folios/guests/history
+│   │   ├── reservations/          # List (search/filter) + New/Edit wizards
+│   │   │   ├── [id]/              # Per-booking detail (Folio/Guests/History tabs)
 │   │   │   └── activity/          # Audit/activity log + date-filter calendar
 │   │   ├── rooms/                 # Room & room type management
 │   │   ├── housekeeping/          # Cleaning queue + maintenance tracker
 │   │   ├── items/                 # Priced items catalog
-│   │   ├── settings/              # Hub linking Items/Activity Log/Staff
-│   │   ├── staff/                 # Staff & scheduling
+│   │   ├── invoices/              # Issued-invoice list (search + status filter)
+│   │   ├── settings/              # Hub: Items/Invoices/Activity Log/Staff + currency
+│   │   ├── staff/                 # Staff & scheduling (add/edit/delete)
 │   │   └── page.tsx               # Dashboard home
 │   ├── login/                     # Shared login (admin + staff)
-│   ├── setup/                     # Initial setup wizard
+│   ├── setup/                     # Initial setup wizard (env-flag gated)
 │   ├── api/staff/create/          # Service-role staff provisioning route
 │   └── page.tsx                   # Landing page
 ├── components/                   # Reusable React components
@@ -70,17 +81,23 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 │   ├── QuickCheckInOut.tsx        # Navbar check-in/out dropdowns
 │   ├── CheckInDialog.tsx          # Check-in wizard
 │   ├── CheckoutDialog.tsx         # Check-out wizard
-│   ├── ReservationFolio.tsx       # Itemized folio + print receipt
+│   ├── ReservationFolio.tsx       # Folio + payments/balance + issue/void invoice + print
 │   ├── ReservationGuests.tsx      # Guest ID viewer/editor
 │   ├── ItemGrid.tsx               # Shared item-catalog picker
-│   └── ActivityCalendar.tsx       # Month-grid activity date filter
+│   ├── ActivityCalendar.tsx       # Month-grid activity date filter
+│   └── ServiceWorkerRegister.tsx  # PWA service worker (production only)
 ├── lib/
 │   ├── supabase.ts                # Browser Supabase client
 │   ├── supabaseAdmin.ts           # Server-only service-role client
-│   ├── AuthContext.tsx            # Session/profile context
+│   ├── AuthContext.tsx            # Session/profile context (+ localStorage mirror)
+│   ├── ConfirmDialog.tsx          # Promise-based confirm/alert dialog
+│   ├── useRealtimeRefresh.ts      # Supabase Realtime refetch hook
+│   ├── currency.ts                # Per-org currency + formatMoney
+│   ├── printInvoice.ts            # Snapshot-driven invoice print
 │   ├── formatDate.ts              # IST timestamp formatting
 │   └── types.ts                   # TypeScript type definitions
-├── database.sql                  # Database schema (run once in Supabase)
+├── database.sql                  # Full schema (clean, re-runnable, role-based RLS)
+├── public/sw.js                  # PWA service worker
 └── .env.local.example            # Environment template
 ```
 
@@ -89,8 +106,13 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 ## Core Features
 
 ### ✅ Implemented
-- **Multi-tenancy**: Support multiple hotels with data isolation (RLS) — not yet role-scoped, see [CLAUDE.md](CLAUDE.md#known-limitations-phase-2-honestly-assessed)
+- **Multi-tenancy**: Support multiple hotels with data isolation (RLS)
+- **Role-based access (RLS-enforced)**: admin / manager / staff each get a different write scope (reads stay open to any org member) — see the permission matrix in [CLAUDE.md](CLAUDE.md#multi-tenancy-model)
 - **Auth**: Supabase Auth logins — one shared `/login` for hotel admins and staff, role read from the `users` row
+- **Billing**: record payments/refunds with a live balance, and issue immutable numbered invoices (frozen snapshot, void-not-delete)
+- **Per-org currency**: each hotel picks its display currency (`lib/currency.ts`)
+- **Live data sync**: Supabase Realtime keeps open pages/tabs current without a reload
+- **Installable PWA**: add-to-home-screen with an offline fallback
 - **Room Management**:
   - Room types (with base price, max guests, description, per-night extra-guest fee)
   - Individual rooms (linked to types)
@@ -122,12 +144,15 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 - `reservations` - Guest bookings, incl. occupancy count and lead guest ID
 - `reservation_charges` - Itemized folio charges (services, discounts, surcharges)
 - `reservation_guests` - Additional occupants beyond the lead guest, with ID
+- `payments` - Money received against a reservation (negative = refund)
+- `invoices` - Immutable issued invoices (frozen snapshot, void-not-delete)
+- `invoice_counters` - Per-(org, month) sequence backing race-safe invoice numbers
 - `items` - Staff-managed priced catalog for quick folio charges
-- `audit_logs` - Create/update/delete trail (reservations + folio charges)
+- `audit_logs` - Create/update/delete trail (reservations + folio charges + payments)
 - `staff_schedules` - Work schedules
 - `maintenance_logs` - Maintenance tracking
 
-All tables include Row-Level Security (RLS) policies scoped to the authenticated user's organization (`org_id = current_org_id()`), not the old `USING (true)` open policies.
+All tables include Row-Level Security (RLS) scoped to the authenticated user's organization (`org_id = current_org_id()`). **Writes are additionally role-scoped** via a `current_user_role()` helper (admin / manager / staff); reads stay open to any org member. See the matrix in [CLAUDE.md](CLAUDE.md#multi-tenancy-model).
 
 ---
 
@@ -173,13 +198,14 @@ All tables include Row-Level Security (RLS) policies scoped to the authenticated
 
 ## Next Steps
 
-**Raised, not yet built (see [CLAUDE.md](CLAUDE.md#phase-25-candidates-raised-not-yet-built)):**
+**Raised, not yet built:**
 - [ ] Guest profiles / repeat-guest recognition
-- [ ] Occupancy/ADR/RevPAR dashboard reporting
+- [ ] Occupancy/ADR/RevPAR dashboard reporting (revenue + outstanding balance exist)
 - [ ] Visual room/date availability chart
-- [ ] Role-based permission enforcement
 - [ ] Password-reset flow
-- [ ] Reservation search/filter
+- [ ] Configurable tax rate (billing Phase C — slot reserved on invoices)
+
+*(Done since earlier drafts: reservation search/filter, role-based permission enforcement, billing/payments/invoices, per-org currency, live data sync, PWA.)*
 
 **Phase 3+:**
 - [ ] Guest self-service booking portal
@@ -206,8 +232,17 @@ All tables include Row-Level Security (RLS) policies scoped to the authenticated
 - Make sure you ran the SQL from `database.sql` in Supabase
 - Check in Supabase dashboard that tables exist in "Tables" section
 
-### "column ... does not exist" (e.g. guest_count, extra_guest_fee)
-- `database.sql` grows incrementally as features are added — this means a pending section hasn't been run yet. See [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) for exactly which section(s) are still pending.
+### "column ... does not exist" or "function ... does not exist"
+- Your Supabase project is on an older schema. Since `database.sql` is now self-contained and re-runnable, just re-run the whole file (⚠ it resets all app data). Common culprits: `mark_room_clean`/`current_user_role` missing → role-RLS section not applied.
+
+### "My code change / setup screen didn't take effect" (dev)
+- The **PWA service worker** is caching stale assets. It's disabled in dev now, but if you were running an older build, clear it once: DevTools → **Application → Clear site data**, then reload. A dev-server restart alone won't fix it. (See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).)
+
+### Setup page says "self-service setup is currently unavailable"
+- Set `NEXT_PUBLIC_SETUP_ENABLED=true` in `.env.local` and **restart** the dev server (env vars don't hot-reload).
+
+### Realtime: changes don't show on other tabs/screens without a reload
+- Enable the tables in Database → **Publications** (Step 6). Also ensure they have `REPLICA IDENTITY FULL` (the schema sets this; re-run `database.sql` if unsure) — without it, updates/deletes don't propagate even when inserts do.
 
 ### "Email signups are disabled"
 - In Supabase Authentication settings, turn on "Allow new users to sign up"

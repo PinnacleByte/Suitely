@@ -1,7 +1,9 @@
-# Billing & Invoicing — Design Plan (for review)
+# Billing & Invoicing — Design Plan (historical)
 
-> Status: **proposal, not yet built.** Scope chosen: *plan first*. Invoice numbering: **date-based**.
-> Nothing in here is deployed. When we build, follow the usual pattern — append new sections to `database.sql`, run only the new section in Supabase, update `lib/types.ts`, then the UI.
+> **Status (2026-07-05): Phases A, B, and D are BUILT and shipped; Phase C (tax) is deferred.** This doc is kept as the design record — the per-phase "✅ BUILT" notes below are accurate; the surrounding prose is the original proposal.
+> **Two original assumptions no longer hold** (see [CLAUDE.md](CLAUDE.md) for current truth):
+> 1. *"Org-scoped RLS only, no role checks"* (§2, §4.1) — the app now has **role-based RLS** (admin/manager/staff). Billing tables: everyone can issue invoices/record payments; **voiding an invoice is manager/admin only**.
+> 2. *"append new sections to `database.sql`, run only the new section"* (below, and §7) — `database.sql` was since **rebuilt into a single clean, re-runnable file** (drop + recreate). New changes edit it in place and you re-run the whole thing.
 
 ## 1. Problem statement
 

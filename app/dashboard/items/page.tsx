@@ -3,6 +3,8 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
+import { useAuth } from '@/lib/AuthContext'
 import { Item } from '@/lib/types'
 import { formatMoney } from '@/lib/currency'
 import { useConfirm } from '@/lib/ConfirmDialog'
@@ -12,6 +14,10 @@ const emptyForm: ItemForm = { name: '', price: '' }
 
 export default function ItemsPage() {
   const { confirm } = useConfirm()
+  const { profile } = useAuth()
+  // Catalog changes are admin-only (RLS-enforced); everyone can still read
+  // the list to add folio charges. This hides the write controls for others.
+  const canManageItems = profile?.role === 'admin'
   const [items, setItems] = useState<Item[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
@@ -22,6 +28,8 @@ export default function ItemsPage() {
   useEffect(() => {
     loadData()
   }, [])
+
+  useRealtimeRefresh(['items'], () => loadData())
 
   const loadData = async () => {
     try {
@@ -120,12 +128,14 @@ export default function ItemsPage() {
           >
             ← Back to Settings
           </a>
-          <button
-            onClick={() => (showForm ? resetForm() : setShowForm(true))}
-            className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
-          >
-            {showForm ? 'Cancel' : '+ New Item'}
-          </button>
+          {canManageItems && (
+            <button
+              onClick={() => (showForm ? resetForm() : setShowForm(true))}
+              className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
+            >
+              {showForm ? 'Cancel' : '+ New Item'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -136,7 +146,7 @@ export default function ItemsPage() {
       )}
 
       <AnimatePresence>
-        {showForm && (
+        {showForm && canManageItems && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
@@ -199,7 +209,9 @@ export default function ItemsPage() {
               <tr>
                 <th className="px-6 py-3 text-left text-gray-300 font-semibold">Name</th>
                 <th className="px-6 py-3 text-left text-gray-300 font-semibold">Price</th>
-                <th className="px-6 py-3 text-left text-gray-300 font-semibold">Actions</th>
+                {canManageItems && (
+                  <th className="px-6 py-3 text-left text-gray-300 font-semibold">Actions</th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -207,22 +219,24 @@ export default function ItemsPage() {
                 <tr key={item.id} className="border-t border-gray-800 hover:bg-gray-800">
                   <td className="px-6 py-3 text-gray-100 font-semibold">{item.name}</td>
                   <td className="px-6 py-3 text-gray-100">{formatMoney(Number(item.price))}</td>
-                  <td className="px-6 py-3">
-                    <div className="flex gap-3 text-sm font-semibold">
-                      <button
-                        onClick={() => handleEdit(item)}
-                        className="text-indigo-400 hover:text-indigo-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDelete(item)}
-                        className="text-red-400 hover:text-red-300"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
+                  {canManageItems && (
+                    <td className="px-6 py-3">
+                      <div className="flex gap-3 text-sm font-semibold">
+                        <button
+                          onClick={() => handleEdit(item)}
+                          className="text-indigo-400 hover:text-indigo-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(item)}
+                          className="text-red-400 hover:text-red-300"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

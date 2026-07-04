@@ -3,10 +3,13 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
+import { useAuth } from '@/lib/AuthContext'
 import { ReservationCharge, Item, Payment, Invoice, InvoiceSnapshot } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
 import { formatMoney, getCurrencyCode } from '@/lib/currency'
 import { useConfirm } from '@/lib/ConfirmDialog'
+import { useIdentityConfirm } from '@/lib/IdentityConfirm'
 import { printInvoice } from '@/lib/printInvoice'
 import ItemGrid from '@/components/ItemGrid'
 
@@ -79,6 +82,11 @@ export default function ReservationFolio({
   checkOutDate: string
 }) {
   const { confirm } = useConfirm()
+  const { confirmIdentity } = useIdentityConfirm()
+  const { profile } = useAuth()
+  // Voiding an issued invoice is manager/admin only (RLS-enforced); staff
+  // can issue but not void. This hides the Void control for staff.
+  const canVoidInvoice = profile?.role === 'admin' || profile?.role === 'manager'
   const [charges, setCharges] = useState<ReservationCharge[]>([])
   const [payments, setPayments] = useState<Payment[]>([])
   const [invoices, setInvoices] = useState<Invoice[]>([])
@@ -102,6 +110,13 @@ export default function ReservationFolio({
     loadItems()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reservationId])
+
+  useRealtimeRefresh(['reservation_charges', 'payments', 'invoices', 'items'], () => {
+    loadCharges()
+    loadPayments()
+    loadInvoices()
+    loadItems()
+  })
 
   const loadCharges = async () => {
     setLoading(true)
@@ -258,6 +273,10 @@ export default function ReservationFolio({
     const orgId = localStorage.getItem('orgId')
     if (!orgId) return
 
+    // Shared-terminal accountability: confirm who's taking the payment.
+    const actor = await confirmIdentity({ action: 'payment', entityId: reservationId })
+    if (!actor) return
+
     const { error: insertError } = await supabase.from('payments').insert([
       {
         org_id: orgId,
@@ -300,13 +319,15 @@ export default function ReservationFolio({
   // the snapshot. No tax yet (Billing Phase C) — subtotal == total.
   const handleIssueInvoice = async () => {
     setError('')
-    setIssuing(true)
 
     const orgId = localStorage.getItem('orgId')
-    if (!orgId) {
-      setIssuing(false)
-      return
-    }
+    if (!orgId) return
+
+    // Shared-terminal accountability: confirm who's issuing the invoice.
+    const actor = await confirmIdentity({ action: 'invoice', entityId: reservationId })
+    if (!actor) return
+
+    setIssuing(true)
 
     const { data: number, error: numberError } = await supabase.rpc('next_invoice_number', {
       p_org: orgId,
@@ -397,9 +418,12 @@ export default function ReservationFolio({
     const paymentRows = payments
       .map(
         (p) =>
-          `<div class="line"><span>Paid — ${METHOD_LABEL[p.method]}</span><span>${money(-Number(p.amount))}</span></div>`
+          `<div class="line"><span>${p.amount < 0 ? 'Refund' : 'Paid'} — ${METHOD_LABEL[p.method]}${p.note ? ' · ' + p.note : ''}</span><span>${money(Number(p.amount))}</span></div>`
       )
       .join('')
+
+    const balanceLabel = balanceDue > 0 ? 'Balance Due' : balanceDue < 0 ? 'Refund Due' : 'Settled'
+    const balanceClass = balanceDue > 0 ? 'due' : balanceDue < 0 ? 'refund' : 'settled'
 
     win.document.write(`
       <html>
@@ -410,8 +434,13 @@ export default function ReservationFolio({
             h1 { font-size: 18px; margin: 0 0 2px; }
             .muted { color: #666; font-size: 12px; margin: 0 0 16px; }
             .line { display: flex; justify-content: space-between; font-size: 14px; margin: 4px 0; }
-            .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 15px;
+            .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;
               border-top: 1px solid #ccc; padding-top: 8px; margin-top: 8px; }
+            .grand { display: flex; justify-content: space-between; font-weight: bold; font-size: 20px;
+              border-top: 2px solid #333; padding-top: 10px; margin-top: 10px; }
+            .grand.due { color: #b45309; }
+            .grand.refund { color: #c2410c; }
+            .grand.settled { color: #047857; }
             .printed { color: #999; font-size: 11px; margin-top: 24px; }
           </style>
         </head>
@@ -423,9 +452,10 @@ export default function ReservationFolio({
           </p>
           <div class="line"><span>Room charge</span><span>${money(roomTotal)}</span></div>
           ${chargeRows}
-          <div class="total"><span>Total</span><span>${money(grandTotal)}</span></div>
+          <div class="total"><span>Total Charges</span><span>${money(grandTotal)}</span></div>
           ${paymentRows}
-          <div class="total"><span>Balance Due</span><span>${money(balanceDue)}</span></div>
+          <div class="total"><span>Total Paid</span><span>${money(paidTotal)}</span></div>
+          <div class="grand ${balanceClass}"><span>${balanceLabel}</span><span>${money(Math.abs(balanceDue))}</span></div>
           <p class="printed">Printed ${formatIST(new Date().toISOString())}</p>
         </body>
       </html>
@@ -448,6 +478,7 @@ export default function ReservationFolio({
       )}
 
       <div className="space-y-1.5 mb-3">
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Charges</p>
         <div className="flex justify-between text-sm">
           <span className="text-gray-300">Room charge</span>
           <span className="text-gray-100 font-semibold">{money(roomTotal)}</span>
@@ -487,8 +518,8 @@ export default function ReservationFolio({
           ))}
         </AnimatePresence>
 
-        <div className="flex justify-between items-center text-sm pt-2 border-t border-gray-800">
-          <span className="font-bold text-gray-100">Total</span>
+        <div className="flex justify-between items-center pt-2 border-t border-gray-800">
+          <span className="font-bold text-gray-100 text-base">Total Charges</span>
           <span className="flex items-center gap-3">
             <button
               onClick={handlePrintReceipt}
@@ -496,47 +527,77 @@ export default function ReservationFolio({
             >
               Print Receipt
             </button>
-            <span className="font-bold text-indigo-400">{money(grandTotal)}</span>
+            <span className="font-bold text-indigo-400 text-lg">{money(grandTotal)}</span>
           </span>
         </div>
 
-        <AnimatePresence>
-          {payments.map((payment) => (
-            <motion.div
-              key={payment.id}
-              layout
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex justify-between items-center text-sm"
-            >
-              <span className="flex items-center gap-2 min-w-0">
-                <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300">
-                  {payment.amount < 0 ? 'Refund' : 'Paid'}
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide pt-3">Payments</p>
+        {payments.length === 0 ? (
+          <p className="text-sm text-gray-500">No payments recorded yet.</p>
+        ) : (
+          <AnimatePresence>
+            {payments.map((payment) => (
+              <motion.div
+                key={payment.id}
+                layout
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="flex justify-between items-center text-sm"
+              >
+                <span className="flex items-center gap-2 min-w-0">
+                  <span
+                    className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${
+                      payment.amount < 0
+                        ? 'bg-orange-500/20 text-orange-300'
+                        : 'bg-emerald-500/20 text-emerald-300'
+                    }`}
+                  >
+                    {payment.amount < 0 ? 'Refund' : 'Paid'}
+                  </span>
+                  <span className="text-gray-300 truncate">
+                    {METHOD_LABEL[payment.method]}
+                    {payment.note ? ` · ${payment.note}` : ''}
+                  </span>
                 </span>
-                <span className="text-gray-300 truncate">
-                  {METHOD_LABEL[payment.method]}
-                  {payment.note ? ` · ${payment.note}` : ''}
+                <span className="flex items-center gap-3 shrink-0">
+                  <span
+                    className={`font-semibold ${payment.amount < 0 ? 'text-orange-400' : 'text-emerald-400'}`}
+                  >
+                    {money(Number(payment.amount))}
+                  </span>
+                  <button
+                    onClick={() => handleDeletePayment(payment)}
+                    disabled={busyId === payment.id}
+                    className="text-red-400 hover:text-red-300 text-xs font-semibold disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
                 </span>
-              </span>
-              <span className="flex items-center gap-3 shrink-0">
-                <span className="text-gray-100">{money(-Number(payment.amount))}</span>
-                <button
-                  onClick={() => handleDeletePayment(payment)}
-                  disabled={busyId === payment.id}
-                  className="text-red-400 hover:text-red-300 text-xs font-semibold disabled:opacity-50"
-                >
-                  Remove
-                </button>
-              </span>
-            </motion.div>
-          ))}
-        </AnimatePresence>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+        )}
 
-        <div className="flex justify-between items-center text-sm pt-2 border-t border-gray-800">
-          <span className="font-bold text-gray-100">Balance Due</span>
-          <span className={`font-bold ${balanceDue > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
-            {balanceDue > 0 ? money(balanceDue) : money(balanceDue) + ' · Settled'}
+        <div className="flex justify-between items-center pt-2 border-t border-gray-800">
+          <span className="font-bold text-gray-100 text-base">Total Paid</span>
+          <span className="font-bold text-emerald-400 text-lg">{money(paidTotal)}</span>
+        </div>
+
+        <div className="flex justify-between items-center pt-3 mt-1 border-t-2 border-gray-700">
+          <span className="font-bold text-gray-100 text-lg">
+            {balanceDue > 0 ? 'Balance Due' : balanceDue < 0 ? 'Refund Due' : 'Settled'}
+          </span>
+          <span
+            className={`font-bold text-xl ${
+              balanceDue > 0
+                ? 'text-amber-400'
+                : balanceDue < 0
+                  ? 'text-orange-400'
+                  : 'text-emerald-400'
+            }`}
+          >
+            {money(Math.abs(balanceDue))}
           </span>
         </div>
       </div>
@@ -570,7 +631,7 @@ export default function ReservationFolio({
                   >
                     Print
                   </button>
-                  {inv.status !== 'void' && (
+                  {inv.status !== 'void' && canVoidInvoice && (
                     <button
                       onClick={() => handleVoidInvoice(inv)}
                       className="text-red-400 hover:text-red-300 text-xs font-semibold"

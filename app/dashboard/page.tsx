@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { todayIST } from '@/lib/formatDate'
 import { formatMoney } from '@/lib/currency'
 import { useAuth } from '@/lib/AuthContext'
@@ -63,6 +64,11 @@ export default function DashboardPage() {
   useEffect(() => {
     loadDashboardData()
   }, [])
+
+  useRealtimeRefresh(
+    ['rooms', 'reservations', 'reservation_charges', 'payments', 'staff_schedules', 'users'],
+    () => loadDashboardData()
+  )
 
   const loadDashboardData = async () => {
     try {

@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useAuth } from '@/lib/AuthContext'
 import { ConfirmProvider } from '@/lib/ConfirmDialog'
+import { IdentityConfirmProvider } from '@/lib/IdentityConfirm'
 import DashboardNav from '@/components/DashboardNav'
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
@@ -28,19 +29,21 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
 
   return (
     <ConfirmProvider>
-      <div className="min-h-screen bg-gray-950">
-        <DashboardNav />
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={pathname}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.2 }}
-          >
-            {children}
-          </motion.div>
-        </AnimatePresence>
-      </div>
+      <IdentityConfirmProvider>
+        <div className="min-h-screen bg-gray-950">
+          <DashboardNav />
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={pathname}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              {children}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </IdentityConfirmProvider>
     </ConfirmProvider>
   )
 }

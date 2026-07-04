@@ -6,6 +6,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import { ArrowLeft, Loader2, Receipt, Users, History, Trash2 } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { Reservation, Room, AuditLog } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
 import { formatMoney } from '@/lib/currency'
@@ -60,6 +61,8 @@ export default function ReservationDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
+  useRealtimeRefresh(['reservations', 'rooms'], () => loadData())
+
   const loadData = async () => {
     try {
       const orgId = localStorage.getItem('orgId')
@@ -85,14 +88,15 @@ export default function ReservationDetailPage() {
     }
   }
 
-  // Load the merged reservation/charge/payment activity for this booking,
-  // same query the list page's History expander used.
+  // Load the merged reservation/charge/payment/confirmation activity for this
+  // booking. 'confirmation' rows (Stage 4 identity confirmations for
+  // check-in/out/payment/invoice) are keyed by this reservation's id too.
   const loadHistory = async () => {
     setHistoryLoading(true)
     const { data } = await supabase
       .from('audit_logs')
       .select('*')
-      .in('entity_type', ['reservation', 'reservation_charge', 'payment'])
+      .in('entity_type', ['reservation', 'reservation_charge', 'payment', 'confirmation'])
       .eq('entity_id', id)
       .order('created_at', { ascending: false })
     setHistory((data as AuditLog[]) || [])

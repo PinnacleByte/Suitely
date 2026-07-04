@@ -17,7 +17,7 @@ Welcome to Suitely! This guide walks you through using each feature of the app.
 - 📅 **Reservations** - Manage guest bookings, folios, guest IDs, and history
 - 🏠 **Rooms** - Manage room inventory
 - 🧹 **Housekeeping** - Cleaning queue + maintenance issues
-- ⚙️ **Settings** - Items catalog, Activity Log, and Staff management
+- ⚙️ **Settings** - Hub for Items catalog, Invoices, Activity Log, Staff management, and the hotel's **display currency** (admin only)
 
 Plus two quick-action buttons on the navbar itself: **Check In** and **Check Out**, usable from any page.
 
@@ -38,19 +38,19 @@ Go to `/login`, enter your email and password, and you'll land on the dashboard.
 
 **Location:** Home page after login
 
-The dashboard is a real operations view, not just a checklist. It shows:
-- **Room Status** - Live counts of Available, Occupied, Cleaning, and Maintenance rooms
+The dashboard is a front-desk operations board. Top to bottom:
+- **Today at a glance** - A compact strip of tiles: Occupancy %, Available, Arriving, Departing, To Clean, Maintenance
 - **Arriving Today / Departing Today** - Guests checking in or out today, with their room number, and a **Check in** / **Check out** button right on the list — no need to leave the dashboard
-- **Revenue This Month** - Total from confirmed/checked-in/checked-out stays starting this month (room price only — doesn't yet include folio charges like minibar or surcharges)
-- **Upcoming Confirmed Revenue** - Total from confirmed future bookings not yet checked in
 - **Staff on Shift Today** - Who's scheduled to work today and their position, from the Staff page's schedules
-- **Quick Actions** - Links to Reservations, Rooms, Housekeeping, Items, and Staff
+- **Financials** *(managers & admins only)* - **Revenue This Month** (now folio-inclusive: room price **plus** minibar/surcharges/discounts), **Upcoming Confirmed** revenue, and **Outstanding Balance** (money still owed across active reservations). A staff/receptionist login doesn't see this section.
 
 All the "today" figures use IST (India Standard Time), regardless of what timezone your own device is set to.
 
 **Use it to:**
 - Get a quick read on what needs attention right now (who's arriving/leaving today, is anything overdue for cleaning)
 - Check a guest in or out without navigating anywhere else
+
+> Pages update **live** — a booking or check-in made on another screen or tab appears here without a manual reload.
 
 ---
 
@@ -85,42 +85,42 @@ Checking a guest in or out opens a short wizard — from **any** of these three 
 3. Follow the wizard: dates → room type → room → guest details
 4. Fill in guest details:
    - **Guest Name** - e.g., "John Doe"
-   - **Email** - Guest's email
-   - **Phone** - Guest's phone number
+   - **Email** *(optional)* - Guest's email — leave blank if you don't have it
+   - **Phone** *(optional)* - Guest's phone number
    - **Total Price** - Auto-calculated from the nightly rate and length of stay (editable)
+   - **Deposit** *(optional)* - Record an advance/deposit taken at booking (amount + method) — it's added to the folio as a payment
 5. Click **Confirm Reservation**
 
 ### Viewing Reservations
 
-All reservations appear in a table showing:
-- Guest name & email
-- Room number
-- Check-in/Check-out dates
-- Total price
-- Status (Confirmed/Checked In/Checked Out/Cancelled), color-coded
+The **list** shows every reservation with a **search box** (guest name, email, or room number) and **status filter tabs** (All / Confirmed / Checked in / Checked out / Cancelled, each with a live count). Each row has a contextual **Check in** / **Check out** button, a **Manage →** link into the detail page, and **Edit** / **Delete**. On phones the table becomes a stacked card layout.
 
-Each row has a row of small links: **Check in**/**Check out** (when applicable — see above), **Edit**, **Delete**, **Folio**, **Guests**, **History**.
+Click a guest's name or **Manage →** to open that booking's **detail page**, a focused workspace with three tabs: **Folio**, **Guests**, and **History**.
 
-### Guest Folio 🧾
+### Guest Folio 🧾 (Detail page → Folio tab)
 
-Click **Folio** on any reservation to see its itemized bill: the room charge, plus any additional charges (minibar, damage, discounts, surcharges), and a running total.
+The folio is the guest's full bill, in two clear sections:
 
-- **+ Add Charge** lets you either pick from your **Items** catalog (with a quantity for each) or enter a **Custom** charge (a free-text description, a category, and an amount — use a negative amount for a discount).
-- **Remove** a charge if it was added by mistake.
-- **Print Receipt** opens a clean, printable summary in a new window — use your browser's print dialog, or choose "Save as PDF" if the guest wants a digital copy.
+- **Charges** — the room charge plus any incidentals (minibar, damage, discounts, surcharges), ending in **Total Charges**.
+  - **+ Add Charge** lets you pick from your **Items** catalog (with a quantity for each) or enter a **Custom** charge (description, category, amount — use a negative amount for a discount).
+- **Payments** — every payment/refund recorded, ending in **Total Paid**.
+  - **+ Record Payment** logs money received (amount + method + note); enter a **negative** amount for a refund.
+- A prominent bottom line shows **Balance Due** (guest owes), **Refund Due** (you owe them), or **Settled**.
+- **Print Receipt** opens a clean, printable summary in a new window (use your browser's print dialog / "Save as PDF").
+- **Issue Invoice** turns the current folio into a formal, numbered, **immutable invoice** (`INV-YYYY-MM-####`). Issued invoices are listed with **Print** and, for managers/admins, **Void** (a mistake is voided, never deleted, so numbers are never reused). Browse them all under **Settings → Invoices**.
 
-### Managing Guest IDs
+### Managing Guest IDs (Detail page → Guests tab)
 
-Click **Guests** on any reservation to view or edit ID information — whether or not you filled it in during check-in.
+View or edit ID information — whether or not you filled it in during check-in.
 - Edit the lead guest's ID type/number and click **Save**.
 - **+ Add Guest** to record an additional occupant's name and ID.
 - **Edit** or **Remove** any additional guest.
 
 ### Audit Trail 📜
 
-Every reservation you create, edit, check in/out, or delete — and every folio charge you add or remove — is automatically logged with a plain-language description, your name, and the exact time (shown in IST). For example: "Checked Out — Room 204 · 2 nights early," or "Charge Added — Minibar x2 – $6.00."
+Every reservation you create, edit, check in/out, or delete — and every folio charge or **payment** you add or remove — is automatically logged with a plain-language description, your name, and the exact time (shown in IST). For example: "Checked Out — Room 204 · 2 nights early," "Charge Added — Minibar x2 – $6.00," or "Payment Received — $200.00 (card)."
 
-- **Per-reservation history**: click **History** on any row to see everything that's happened to that specific reservation (including its folio charges).
+- **Per-reservation history**: open a reservation's detail page and click the **History** tab to see everything that's happened to that specific booking (reservation changes, folio charges, and payments interleaved).
 - **Full activity log**: go to **Settings → Activity Log** to see everything across your whole hotel, including reservations that have since been deleted. Use the **calendar on the left** to jump to a specific day — days with recorded activity have a dot; click one to filter, or **Show all** to go back to the full list.
 
 ---
@@ -204,6 +204,16 @@ Edit the price anytime — it only affects future selections, not charges alread
 
 Items you add here show up in the **Check-Out wizard's Items step** and in a reservation's **Folio → Add Charge → From Catalog**.
 
+> **Note:** Managing the catalog (add/edit/delete) is **admin-only**. Managers and staff can still use catalog items on folios; they just can't change the list.
+
+---
+
+## Display Currency 💱
+
+**Location:** Settings (admin only)
+
+Pick the currency all prices display in across the app (e.g. USD, INR, EUR). This is **display only** — it changes how amounts are shown, never the stored values, and takes effect immediately without a re-login. Set it once at setup; change it anytime from Settings.
+
 ---
 
 ## Staff Management 👥
@@ -227,9 +237,14 @@ Adding a staff member creates a **real login** for them, not just a directory en
      - **Admin** - Full access to system
 4. Click **Add Staff Member**
 
-Staff members appear in a table with name, email, and role. They can now sign in at `/login` with the email and password you gave them.
+Staff members appear in a table with name, email, and role, plus **Edit** (change name/role) and **Delete** actions for admins/managers. They can sign in at `/login` with the email and password you gave them. (You can't delete your own account or the last remaining admin.)
 
-> **Note:** Roles are currently informational — every signed-in staff member can access and edit everything in the hotel's account (create/edit/delete reservations, folios, rooms, etc.), regardless of whether they're marked Staff, Manager, or Admin. Keep that in mind when deciding who gets an account.
+> **Roles are enforced** (at the database level, not just the UI). What each can do:
+> - **Staff** — book / edit / delete reservations, check guests in/out, take payments, issue invoices, and do housekeeping (mark rooms clean, log/advance maintenance). Staff **cannot** configure rooms/room-types, manage staff, change currency, void invoices, or edit the items catalog.
+> - **Manager** — everything staff can, **plus** room/room-type config, staff management, and voiding invoices.
+> - **Admin** — everything, **plus** the items catalog and org settings (currency).
+>
+> Everyone can still *view* everything in their hotel; roles restrict *changes*. Pick roles accordingly.
 
 ### Creating Schedules
 
@@ -297,7 +312,7 @@ Schedules appear in a table showing staff name, position, date, and times.
 - Go to Rooms → + New Room Type
 
 ### Issue: Check-in wizard or Guests panel shows an error
-- This usually means a database migration from the current development session hasn't been applied yet — see [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) if you're the developer, or ask them.
+- Usually a database schema mismatch — if you're the developer, re-run `database.sql` (it's re-runnable); otherwise see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ### Issue: Can't log in
 - Double-check your email and password
@@ -369,20 +384,21 @@ Schedules appear in a table showing staff name, position, date, and times.
 
 **Raised, not yet built:**
 - Guest profiles / repeat-guest recognition
-- Occupancy/ADR/RevPAR reporting on the dashboard
+- Occupancy/ADR/RevPAR reporting on the dashboard (revenue + outstanding balance exist)
 - A visual room/date availability chart
-- Enforcing staff roles (currently informational only)
 - Self-service password reset
-- Search/filter on the Reservations table
+- Configurable tax rate on invoices
+
+*(Recently shipped: reservation search/filter, **role enforcement**, billing (payments + invoices), per-org currency, live data sync, installable PWA.)*
 
 **Phase 3+ Features:**
 - Guest self-service booking
 - Email/SMS notifications
-- Payment processing
-- Booking integrations
-- Analytics & reporting
+- Payment **processing** / gateway (Stripe)
+- Booking integrations (OTA)
+- Advanced analytics & reporting
 
 ---
 
-**Version:** 3.0 (Phase 2: Check-in/out, Folios, Housekeeping, Occupancy & Guest IDs)
-**Last Updated:** 2026-07-02
+**Version:** 4.0 (Billing, Role-based access, Realtime, PWA)
+**Last Updated:** 2026-07-05

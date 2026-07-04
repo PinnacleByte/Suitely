@@ -22,6 +22,10 @@ export function printInvoice(invoice: Invoice) {
 
   const voidBanner = invoice.status === 'void' ? '<div class="void">VOID</div>' : ''
 
+  const balanceLabel =
+    snap.balance_due > 0 ? 'Balance Due' : snap.balance_due < 0 ? 'Refund Due' : 'Settled'
+  const balanceClass = snap.balance_due > 0 ? 'due' : snap.balance_due < 0 ? 'refund' : 'settled'
+
   win.document.write(`
     <html>
       <head>
@@ -32,8 +36,13 @@ export function printInvoice(invoice: Invoice) {
           .num { font-size: 13px; color: #444; margin: 0 0 2px; font-weight: bold; }
           .muted { color: #666; font-size: 12px; margin: 0 0 16px; }
           .line { display: flex; justify-content: space-between; font-size: 14px; margin: 4px 0; }
-          .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 15px;
+          .total { display: flex; justify-content: space-between; font-weight: bold; font-size: 16px;
             border-top: 1px solid #ccc; padding-top: 8px; margin-top: 8px; }
+          .grand { display: flex; justify-content: space-between; font-weight: bold; font-size: 20px;
+            border-top: 2px solid #333; padding-top: 10px; margin-top: 10px; }
+          .grand.due { color: #b45309; }
+          .grand.refund { color: #c2410c; }
+          .grand.settled { color: #047857; }
           .printed { color: #999; font-size: 11px; margin-top: 24px; }
           .void { position: absolute; top: 120px; left: 50%; transform: translateX(-50%) rotate(-18deg);
             font-size: 72px; color: rgba(220,0,0,0.18); font-weight: bold; letter-spacing: 6px; pointer-events: none; }
@@ -49,9 +58,9 @@ export function printInvoice(invoice: Invoice) {
           Issued ${formatIST(snap.issued_at)}
         </p>
         ${lineRows}
-        <div class="total"><span>Total</span><span>${fmt(snap.total)}</span></div>
-        <div class="line"><span>Paid</span><span>${fmt(-snap.amount_paid)}</span></div>
-        <div class="total"><span>Balance Due</span><span>${fmt(snap.balance_due)}</span></div>
+        <div class="total"><span>Total Charges</span><span>${fmt(snap.total)}</span></div>
+        <div class="total"><span>Total Paid</span><span>${fmt(snap.amount_paid)}</span></div>
+        <div class="grand ${balanceClass}"><span>${balanceLabel}</span><span>${fmt(Math.abs(snap.balance_due))}</span></div>
         <p class="printed">Printed ${formatIST(new Date().toISOString())}</p>
       </body>
     </html>

@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { Invoice } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
 import { formatMoney, CurrencyCode } from '@/lib/currency'
@@ -31,6 +32,8 @@ export default function InvoicesPage() {
   useEffect(() => {
     loadInvoices()
   }, [])
+
+  useRealtimeRefresh(['invoices'], () => loadInvoices())
 
   const loadInvoices = async () => {
     try {

@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
+import { useAuth } from '@/lib/AuthContext'
 import { Room, RoomType, MaintenanceLog } from '@/lib/types'
 import { formatMoney } from '@/lib/currency'
 import { useConfirm } from '@/lib/ConfirmDialog'
@@ -21,6 +23,11 @@ const sortByRoomNumber = (a: Room, b: Room) =>
 
 export default function RoomsPage() {
   const { confirm } = useConfirm()
+  const { profile } = useAuth()
+  // Rooms/room-types are inventory config: manager + admin only (RLS-enforced;
+  // this just hides the write controls staff can't use). Staff still see the
+  // room grid read-only, and can act on maintenance from the Housekeeping page.
+  const canManageRooms = profile?.role === 'admin' || profile?.role === 'manager'
   const [rooms, setRooms] = useState<Room[]>([])
   const [roomTypes, setRoomTypes] = useState<RoomType[]>([])
   const [maintenanceLogs, setMaintenanceLogs] = useState<MaintenanceLog[]>([])
@@ -47,6 +54,8 @@ export default function RoomsPage() {
   useEffect(() => {
     loadData()
   }, [])
+
+  useRealtimeRefresh(['rooms', 'room_types', 'maintenance_logs'], () => loadData())
 
   const loadData = async () => {
     try {
@@ -250,21 +259,23 @@ export default function RoomsPage() {
         <div className="mb-12">
           <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Room Types</h2>
-            <button
-              onClick={() => {
-                if (showTypeForm) {
-                  resetTypeForm()
-                } else {
-                  setShowTypeForm(true)
-                }
-              }}
-              className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
-            >
-              {showTypeForm ? 'Cancel' : '+ New Room Type'}
-            </button>
+            {canManageRooms && (
+              <button
+                onClick={() => {
+                  if (showTypeForm) {
+                    resetTypeForm()
+                  } else {
+                    setShowTypeForm(true)
+                  }
+                }}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
+              >
+                {showTypeForm ? 'Cancel' : '+ New Room Type'}
+              </button>
+            )}
           </div>
 
-          {showTypeForm && (
+          {showTypeForm && canManageRooms && (
             <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 mb-8">
               <h3 className="text-xl font-bold mb-4">
                 {editingTypeId ? 'Edit Room Type' : 'New Room Type'}
@@ -378,20 +389,22 @@ export default function RoomsPage() {
                     <h3 className="text-xl font-bold text-gray-100">
                       {type.name}
                     </h3>
-                    <div className="flex gap-3 text-sm font-semibold">
-                      <button
-                        onClick={() => handleEditType(type)}
-                        className="text-indigo-400 hover:text-indigo-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteType(type)}
-                        className="text-red-400 hover:text-red-300"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    {canManageRooms && (
+                      <div className="flex gap-3 text-sm font-semibold">
+                        <button
+                          onClick={() => handleEditType(type)}
+                          className="text-indigo-400 hover:text-indigo-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteType(type)}
+                          className="text-red-400 hover:text-red-300"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <p className="text-gray-400 mb-4">{type.description}</p>
                   <div className="flex justify-between items-center">
@@ -423,21 +436,23 @@ export default function RoomsPage() {
         <div>
           <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:justify-between sm:items-center">
             <h2 className="text-2xl font-bold text-gray-100">Rooms</h2>
-            <button
-              onClick={() => {
-                if (showRoomForm) {
-                  resetRoomForm()
-                } else {
-                  setShowRoomForm(true)
-                }
-              }}
-              className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
-            >
-              {showRoomForm ? 'Cancel' : '+ New Room'}
-            </button>
+            {canManageRooms && (
+              <button
+                onClick={() => {
+                  if (showRoomForm) {
+                    resetRoomForm()
+                  } else {
+                    setShowRoomForm(true)
+                  }
+                }}
+                className="px-6 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500 transition"
+              >
+                {showRoomForm ? 'Cancel' : '+ New Room'}
+              </button>
+            )}
           </div>
 
-          {showRoomForm && (
+          {showRoomForm && canManageRooms && (
             <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-8 mb-8">
               <h3 className="text-xl font-bold mb-4">
                 {editingRoomId ? 'Edit Room' : 'New Room'}
@@ -592,20 +607,22 @@ export default function RoomsPage() {
                     <div className="text-2xl font-bold text-gray-100">
                       #{room.room_number}
                     </div>
-                    <div className="flex gap-2 text-xs font-semibold">
-                      <button
-                        onClick={() => handleEditRoom(room)}
-                        className="text-indigo-400 hover:text-indigo-300"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        onClick={() => handleDeleteRoom(room)}
-                        className="text-red-400 hover:text-red-300"
-                      >
-                        Delete
-                      </button>
-                    </div>
+                    {canManageRooms && (
+                      <div className="flex gap-2 text-xs font-semibold">
+                        <button
+                          onClick={() => handleEditRoom(room)}
+                          className="text-indigo-400 hover:text-indigo-300"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDeleteRoom(room)}
+                          className="text-red-400 hover:text-red-300"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
                   </div>
                   <span className={`inline-block px-3 py-1 rounded-full text-sm font-semibold ${getStatusColor(room.status)}`}>
                     {room.status}

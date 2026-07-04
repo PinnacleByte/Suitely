@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { Room, RoomType, MaintenanceLog } from '@/lib/types'
 import { formatIST } from '@/lib/formatDate'
 import { useConfirm } from '@/lib/ConfirmDialog'
@@ -55,6 +56,8 @@ export default function HousekeepingPage() {
     loadData()
   }, [])
 
+  useRealtimeRefresh(['rooms', 'room_types', 'maintenance_logs'], () => loadData())
+
   const loadData = async () => {
     try {
       const orgId = localStorage.getItem('orgId')
@@ -83,18 +86,18 @@ export default function HousekeepingPage() {
   const typeName = (room: Room) =>
     roomTypes.find((t) => t.id === room.room_type_id)?.name ?? 'Unassigned type'
 
-  // Housekeeping finished a room — return it to service. The room row is
-  // updated directly; no reservation is involved here.
+  // Housekeeping finished a room — return it to service. Goes through the
+  // mark_room_clean() RPC (SECURITY DEFINER) rather than a direct rooms
+  // UPDATE, since staff have no direct rooms write grant (that's reserved
+  // for manager/admin inventory config) but CAN complete a housekeeping
+  // turnaround. The RPC re-checks org + that the room is actually 'cleaning'.
   const markRoomClean = async (room: Room) => {
     setBusyId(room.id)
-    const { error: updateError } = await supabase
-      .from('rooms')
-      .update({ status: 'available' })
-      .eq('id', room.id)
+    const { error: rpcError } = await supabase.rpc('mark_room_clean', { p_room: room.id })
     setBusyId(null)
 
-    if (updateError) {
-      setError(updateError.message)
+    if (rpcError) {
+      setError(rpcError.message)
       return
     }
     loadData()

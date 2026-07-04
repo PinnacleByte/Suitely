@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { useIdentityConfirm } from '@/lib/IdentityConfirm'
 import { Reservation, RoomType } from '@/lib/types'
 import { formatMoney } from '@/lib/currency'
 
@@ -32,6 +33,7 @@ export default function CheckInDialog({
   onClose: () => void
   onCheckedIn: () => void
 }) {
+  const { confirmIdentity } = useIdentityConfirm()
   const [step, setStep] = useState(1)
   const [loading, setLoading] = useState(true)
   const [roomType, setRoomType] = useState<RoomType | null>(null)
@@ -99,6 +101,11 @@ export default function CheckInDialog({
 
   const handleConfirm = async () => {
     setError('')
+
+    // Shared-terminal accountability: confirm who's checking the guest in.
+    const actor = await confirmIdentity({ action: 'check_in', entityId: reservation.id })
+    if (!actor) return
+
     setSubmitting(true)
 
     const { error: updateError } = await supabase

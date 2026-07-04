@@ -1,13 +1,44 @@
 # Suitely - Troubleshooting Guide
 
 ## Table of Contents
-1. [Setup Issues](#setup-issues)
-2. [Login & Auth Issues](#login--auth-issues)
-3. [Display Issues](#display-issues)
-4. [Data Issues](#data-issues)
-5. [Database Issues](#database-issues)
-6. [Check-In / Check-Out / Folio Issues](#check-in--check-out--folio-issues)
-7. [Getting Help](#getting-help)
+1. [Top Gotchas (read first)](#top-gotchas-read-first)
+2. [Setup Issues](#setup-issues)
+3. [Login & Auth Issues](#login--auth-issues)
+4. [Display Issues](#display-issues)
+5. [Data Issues](#data-issues)
+6. [Database Issues](#database-issues)
+7. [Check-In / Check-Out / Folio Issues](#check-in--check-out--folio-issues)
+8. [Getting Help](#getting-help)
+
+---
+
+## Top Gotchas (read first)
+
+These three cost the most debugging time — check them before anything else.
+
+### 🥇 "My code change (or the setup screen) didn't take effect" — stale service worker
+
+**Symptom:** You edit code, restart the dev server, hard-refresh… and the browser *still* runs the old version. Nothing you change appears. Feels like your edits aren't saving.
+
+**Cause:** The app ships a **PWA service worker** (`public/sw.js`) that caches `/_next/static/` chunks *cache-first*. That's correct in production (hashed URLs) but in **dev** the chunk URLs are stable, so the service worker keeps serving stale compiled code — surviving dev-server restarts, `.next` deletion, and hard refreshes.
+
+**Fix (one time):** DevTools (F12) → **Application** tab → **Clear site data** → reload. That unregisters the service worker and wipes its caches. (Alternatively Application → Service Workers → **Unregister**.)
+
+**Prevented going forward:** the service worker is now registered **only in production** (`components/ServiceWorkerRegister.tsx`); in dev it unregisters itself. But an already-installed one must be cleared by hand once, because it's serving the old registration code too.
+
+### 🥈 "Changes don't sync to other tabs/screens without a reload" — Realtime not fully enabled
+
+**Symptom:** Creating a reservation shows up elsewhere live, but **check-in/check-out or deletes don't** until you reload (or nothing syncs at all).
+
+**Cause / fix:** Two Supabase-side requirements for live sync:
+1. The tables must be in the `supabase_realtime` **publication** (Database → **Publications**). If you dropped/recreated tables, they were removed from it — re-add them.
+2. The tables need **`REPLICA IDENTITY FULL`** (the schema sets this). Without it, UPDATE/DELETE events on RLS tables are dropped and only INSERTs sync — which is exactly the "creating works but checking in doesn't" symptom. Re-run `database.sql` (or the `ALTER TABLE … REPLICA IDENTITY FULL` block) if unsure.
+
+### 🥉 "403 / row-level security" on an action that used to work — role permissions
+
+**Symptom:** A **staff**-role user gets a permission error (or a button is missing) when trying to edit rooms, manage staff, change currency, void an invoice, or edit the items catalog.
+
+**Cause:** This is **intended** — roles are now DB-enforced (RLS). Staff can book/check-in/out, take payments, issue invoices, and do housekeeping, but **not** inventory config, staff management, currency, invoice voiding, or catalog edits (those are manager and/or admin). See the permission matrix in [CLAUDE.md](CLAUDE.md#multi-tenancy-model). If someone genuinely needs those, give them a manager or admin role (Settings → Staff → edit).
 
 ---
 
@@ -361,53 +392,25 @@ If you get errors:
 
 ### "SQL query fails when run in Supabase"
 
-**Issue:** Error when trying to create tables
+**Issue:** Error when running the schema
 
-**Cause:** Database already has tables (trying to create duplicates)
+**Cause & solution:** `database.sql` is now **self-contained and re-runnable** — it starts with a `DROP TABLE IF EXISTS … CASCADE` reset block and recreates everything, so "table already exists" duplicate errors shouldn't happen. Just run the **whole file**.
 
-**Solution:**
+⚠ Because it resets, running it **wipes all app data**. It does **not** delete Supabase Auth accounts (`auth.users`) — clear those separately from **Authentication → Users** if you want a truly clean slate (otherwise re-running `/setup` with the same email conflicts).
 
-**If tables already exist (OK):**
-- Just skip that part
-- Run only the newer sections you haven't applied yet (check the comments in [database.sql](database.sql) — each major addition is clearly delimited, e.g. "Phase 2: Real auth...")
-
-**If want fresh database:**
-```sql
--- Drop all tables (CAREFUL - deletes all data!)
-DROP TABLE IF EXISTS audit_logs CASCADE;
-DROP TABLE IF EXISTS maintenance_logs CASCADE;
-DROP TABLE IF EXISTS staff_schedules CASCADE;
-DROP TABLE IF EXISTS reservations CASCADE;
-DROP TABLE IF EXISTS rooms CASCADE;
-DROP TABLE IF EXISTS room_types CASCADE;
-DROP TABLE IF EXISTS users CASCADE;
-DROP TABLE IF EXISTS organizations CASCADE;
-```
-This does not delete Supabase Auth accounts (`auth.users`) — clear those separately from Authentication → Users if you want a truly clean slate.
-
-Then run full [database.sql](database.sql) again.
+If a specific statement genuinely errors, copy the exact message and share it — don't hand-edit the schema to work around it.
 
 ---
 
 ## Check-In / Check-Out / Folio Issues
 
-### "column reservations.guest_count does not exist" (or guest_id_type / guest_id_number)
+### "column ... does not exist" / "relation ... does not exist" / "function ... does not exist"
 
-**Cause:** The occupancy + guest ID capture migration (the last section of `database.sql`) hasn't been run against this Supabase project yet — it's a separate, more recent addition than the base schema.
+**Examples:** `reservations.guest_count`, `reservation_charges`, `payments`, `invoices`, `current_user_role`, `mark_room_clean`.
 
-**Solution:**
-1. Open [database.sql](database.sql) and find the comment `-- Check-in occupancy + guest ID capture...` near the end of the file
-2. Copy from that comment to the end of the file
-3. Run it in the Supabase SQL Editor
-4. See [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) for the full list of what may still be pending
+**Cause:** Your Supabase project is on an older schema than the current `database.sql`.
 
----
-
-### "relation reservation_charges does not exist" / "relation items does not exist" / "relation reservation_guests does not exist"
-
-**Cause:** Same as above — one of the incrementally-appended sections of `database.sql` (folio, items catalog, or guest capture) hasn't been run yet.
-
-**Solution:** Same as above — check [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) for exactly which section is missing, and run only that section (not the whole file — see the [Database Issues](#sql-query-fails-when-run-in-supabase) note above about re-running already-applied SQL).
+**Solution:** Since the file is now self-contained and re-runnable, just **re-run the whole `database.sql`** in the SQL Editor. ⚠ This resets all app data (see [Database Issues](#sql-query-fails-when-run-in-supabase)). After re-running, re-enable the Realtime **Publications** (they're lost when tables are dropped).
 
 ---
 
@@ -527,5 +530,5 @@ Then run full [database.sql](database.sql) again.
 
 ---
 
-**Last Updated:** 2026-07-02
-**Version:** 3.0
+**Last Updated:** 2026-07-05
+**Version:** 4.0 (role-based RLS, billing, realtime, PWA)

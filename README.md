@@ -6,17 +6,21 @@ Manage reservations, check-in/check-out, housekeeping, guest folios, and staff s
 
 ## Features ✨
 
-- **📅 Reservation Management** - Create, view, and manage guest bookings via a step-by-step booking wizard
+- **📅 Reservation Management** - Create, search/filter, and manage guest bookings via a step-by-step booking wizard, plus a focused per-booking **detail page** (`/dashboard/reservations/[id]`) with Folio / Guests / History tabs
 - **✅ Check-In / Check-Out Workflows** - Multi-step wizards from every entry point (Reservations, Dashboard, or the navbar): occupancy + optional guest ID capture at check-in (with an automatic over-capacity surcharge), and departure date + item charges + early-checkout credit at check-out
 - **🧾 Itemized Guest Folios** - Room charge plus itemized incidentals (minibar, damage, discounts) from a staff-managed items catalog, with a one-click printable receipt
+- **💳 Billing** - Record **payments** (and refunds) against a folio with a live Balance Due / Refund Due, and issue **immutable, numbered invoices** (frozen snapshot, void-not-delete) with their own list page and print
+- **💱 Per-Org Currency** - Each hotel picks its own display currency; a single `formatMoney` helper formats every price
 - **🧹 Housekeeping & Maintenance** - A cleaning queue for turning rooms around after checkout, and a maintenance issue tracker that automatically takes a room out of service and hands it back
 - **🏠 Room Management** - Track room types (incl. per-night extra-guest fees), availability, and status
-- **👥 Staff Management** - Manage team members and work schedules
-- **🔐 Real Auth** - Supabase Auth logins for hotel admins and individual staff members
-- **📜 Rich Audit Trail** - Every reservation and folio-charge change is logged with a human-readable description (who, what, when) — survives even after the record is deleted, with a calendar-based date filter
-- **📊 Dashboard** - Live room status, today's arrivals/departures (actionable, not just informational), revenue snapshot, staff on shift
+- **👥 Staff Management** - Add, **edit, and delete** team members and work schedules; real per-member logins
+- **🔐 Real Auth + Role-Based Access** - Supabase Auth logins for hotel admins and staff, with **DB-enforced (RLS) roles**: admin / manager / staff each get a different write scope
+- **📜 Rich Audit Trail** - Every reservation, folio-charge, and payment change is logged with a human-readable description (who, what, when) — survives even after the record is deleted, with a calendar-based date filter
+- **⚡ Live Data Sync** - Supabase Realtime keeps every open page/tab current — a booking or check-in made on one screen shows up on the others without a reload
+- **📱 Installable PWA** - Add-to-home-screen support with an offline fallback (service worker)
+- **📊 Dashboard** - Front-desk operations board: occupancy glance strip, actionable arrivals/departures, staff on shift, and a manager-only financials section (folio-inclusive revenue + outstanding balance)
 - **🔒 Multi-Tenant** - Support multiple hotels with one codebase, isolated via Row-Level Security
-- **🌙 Dark Mode** - Dark theme throughout, with subtle animations
+- **🌙 Dark Mode** - Dark theme throughout, with subtle animations and a styled confirm/alert dialog
 
 ## Quick Start 🚀
 
@@ -49,11 +53,13 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 4. **Initialize Database**
    - Go to Supabase SQL Editor
    - Create new query
-   - Copy all content from `database.sql`
-   - Run it
-   - **Resuming an existing project?** Check [CLAUDE.md](CLAUDE.md#outstanding-manual-steps-run-this-next) — not every section of `database.sql` may have been run against your project yet, and re-running the whole file isn't safe (it isn't fully idempotent).
+   - Copy all content from `database.sql` and run it. The file is **self-contained and re-runnable** — it drops and recreates every table, so running the whole thing gives you a clean schema with role-based RLS. ⚠ That reset is **destructive** (wipes all app data); it does not touch Supabase Auth accounts (`auth.users`).
+   - **Enable Realtime**: Database → **Publications** → add the app tables to `supabase_realtime` (needed for live sync). The schema already sets `REPLICA IDENTITY FULL` on those tables so updates/deletes propagate too.
 
-5. **Start Development**
+5. **Enable the setup wizard** (first run only)
+   - The public `/setup` wizard is gated behind an env flag so it can't be left open in production. Set `NEXT_PUBLIC_SETUP_ENABLED=true` in `.env.local` to use it, then flip it back to `false` once your hotel exists. (Restart the dev server after changing it — env vars don't hot-reload.)
+
+6. **Start Development**
 ```bash
 npm run dev
 ```
@@ -69,9 +75,10 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 
 ## Tech Stack 🛠️
 
-- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Framer Motion
-- **Backend**: Supabase (PostgreSQL), REST API
-- **Auth**: Supabase Auth (email/password) — shared login for hotel admins and staff
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS 4, Framer Motion, lucide-react
+- **Backend**: Supabase (PostgreSQL + Realtime), REST API
+- **Auth**: Supabase Auth (email/password) — shared login for hotel admins and staff, role-based RLS
+- **PWA**: Installable with an offline fallback (hand-rolled service worker, production only)
 - **Hosting**: Vercel (recommended)
 
 ## Project Structure
@@ -79,15 +86,17 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 ```
 ├── app/                          # Next.js pages
 │   ├── dashboard/                 # Main app pages (auth-guarded layout)
-│   │   ├── reservations/
+│   │   ├── reservations/          # List (search/filter) + New/Edit wizards
+│   │   │   ├── [id]/              # Per-booking detail (Folio/Guests/History tabs)
 │   │   │   └── activity/          # Audit/activity log + date-filter calendar
 │   │   ├── rooms/                 # Room types + rooms
 │   │   ├── housekeeping/          # Cleaning queue + maintenance tracker
 │   │   ├── items/                 # Priced items catalog
-│   │   ├── settings/              # Hub linking Items/Activity Log/Staff
+│   │   ├── invoices/              # Issued-invoice list (search + status filter)
+│   │   ├── settings/              # Hub: Items/Invoices/Activity Log/Staff + currency
 │   │   └── staff/
 │   ├── login/                     # Shared login (admin + staff)
-│   ├── setup/                     # Initial setup wizard
+│   ├── setup/                     # Initial setup wizard (env-flag gated)
 │   ├── api/staff/create/          # Service-role staff provisioning
 │   └── page.tsx                   # Landing page
 ├── components/                   # Reusable React components
@@ -95,18 +104,25 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 │   ├── QuickCheckInOut.tsx        # Navbar check-in/out dropdowns
 │   ├── CheckInDialog.tsx          # Check-in wizard
 │   ├── CheckoutDialog.tsx         # Check-out wizard
-│   ├── ReservationFolio.tsx       # Itemized folio + print receipt
+│   ├── ReservationFolio.tsx       # Folio + payments/balance + issue/void invoice + print
 │   ├── ReservationGuests.tsx      # Guest ID viewer/editor
 │   ├── ItemGrid.tsx               # Shared item-catalog picker
-│   └── ActivityCalendar.tsx       # Month-grid activity date filter
+│   ├── ActivityCalendar.tsx       # Month-grid activity date filter
+│   └── ServiceWorkerRegister.tsx  # PWA service worker (production only)
 ├── lib/
 │   ├── supabase.ts                # Browser database client
 │   ├── supabaseAdmin.ts           # Server-only service-role client
-│   ├── AuthContext.tsx            # Session/profile context
+│   ├── AuthContext.tsx            # Session/profile context (+ localStorage mirror)
+│   ├── ConfirmDialog.tsx          # Promise-based confirm/alert dialog
+│   ├── useRealtimeRefresh.ts      # Supabase Realtime refetch hook
+│   ├── currency.ts                # Per-org currency + formatMoney
+│   ├── printInvoice.ts            # Snapshot-driven invoice print
 │   ├── formatDate.ts              # IST timestamp formatting
 │   └── types.ts                   # TypeScript definitions
-├── database.sql                  # Database schema
-└── public/                       # Static assets
+├── database.sql                  # Full schema (clean, re-runnable, role-based RLS)
+└── public/
+    ├── sw.js                      # PWA service worker
+    └── ...                        # Static assets
 ```
 
 ## Usage Example
@@ -124,7 +140,7 @@ await supabase
     org_id: orgId,
     room_id: '...',
     guest_name: 'John Doe',
-    guest_email: 'john@example.com',
+    guest_email: '',          // optional
     check_in_date: '2026-07-15',
     check_out_date: '2026-07-18',
     total_price: 300,
@@ -142,29 +158,38 @@ Creating this reservation while signed in is automatically recorded in the audit
 - ✅ Staff & scheduling
 - ✅ Basic dashboard
 
-### Phase 2 ✅ (Essentially Complete)
+### Phase 2 ✅ (Complete)
 - ✅ Real auth (hotel admin + staff logins)
-- ✅ Reservation + folio audit trail
+- ✅ Reservation + folio + payment audit trail
 - ✅ Check-in/check-out workflows (with occupancy surcharge & guest ID capture)
 - ✅ Itemized guest folios + items catalog
 - ✅ Housekeeping task management
 - ✅ Maintenance tracking
 
-### Phase 2.5 (Raised, not yet built)
+### Phase 2.5 ✅ (Complete)
+- ✅ Reservation search/filter + mobile card layout
+- ✅ Per-org currency
+- ✅ Styled confirm/alert dialog, lucide-react icons
+- ✅ Billing: payments + immutable invoices (Stripe not integrated — this is manual record-keeping)
+- ✅ Reservations list + per-booking detail page
+- ✅ Live data sync (Supabase Realtime)
+- ✅ Installable PWA
+- ✅ **Role-based permission enforcement (RLS)** — admin / manager / staff
+
+### Still Raised (not yet built)
 - [ ] Guest profiles / repeat-guest recognition
-- [ ] Occupancy/ADR/RevPAR reporting
-- [ ] Visual room/date availability chart
-- [ ] Role-based permission enforcement
-- [ ] Password-reset flow
-- [ ] Reservation search/filter
+- [ ] Occupancy/ADR/RevPAR reporting (revenue + outstanding balance exist; no ADR/RevPAR)
+- [ ] Visual room/date availability chart ("tape chart")
+- [ ] Password-reset / forgot-password flow
+- [ ] Configurable tax rate (billing Phase C — slot reserved on invoices)
 
 ### Phase 3 (Future)
 - [ ] Guest self-service booking
 - [ ] Email/SMS notifications
-- [ ] Payment processing (Stripe)
+- [ ] Payment **processing** / gateway (Stripe)
 - [ ] OTA integrations (Booking.com, Airbnb)
 - [ ] Advanced reporting & analytics
-- [ ] Mobile app (React Native)
+- [ ] Native mobile app (React Native)
 
 ## Deployment 🌐
 
@@ -188,19 +213,22 @@ Creating this reservation while signed in is automatically recorded in the audit
 
 | Table | Purpose |
 |-------|---------|
-| `organizations` | Hotel info (tenants) |
-| `users` | Staff members (real Supabase Auth logins) |
+| `organizations` | Hotel info (tenants), incl. display currency |
+| `users` | Staff members (real Supabase Auth logins), incl. role |
 | `rooms` | Physical rooms |
 | `room_types` | Room classifications, incl. per-night extra-guest fee |
 | `reservations` | Guest bookings, incl. occupancy count and lead guest ID |
 | `reservation_charges` | Itemized folio charges (services, discounts, surcharges) |
 | `reservation_guests` | Additional occupants beyond the lead guest, with ID |
+| `payments` | Money received against a reservation (negative = refund) |
+| `invoices` | Immutable issued invoices (frozen snapshot, void-not-delete) |
+| `invoice_counters` | Per-(org, month) sequence backing race-safe invoice numbers |
 | `items` | Staff-managed priced catalog for quick folio charges |
-| `audit_logs` | Create/update/delete trail (reservations + folio charges) |
+| `audit_logs` | Create/update/delete trail (reservations + folio charges + payments) |
 | `staff_schedules` | Work shifts |
 | `maintenance_logs` | Maintenance tracking |
 
-All tables include Row-Level Security scoped to the authenticated user's organization (not yet scoped by staff role — see [CLAUDE.md](CLAUDE.md#known-limitations-phase-2-honestly-assessed)).
+All tables include Row-Level Security scoped to the authenticated user's organization. Writes are additionally **role-scoped** (admin / manager / staff) — reads stay open to any org member. See [CLAUDE.md](CLAUDE.md#multi-tenancy-model) for the full permission matrix.
 
 ## Troubleshooting
 

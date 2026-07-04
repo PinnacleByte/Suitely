@@ -6,6 +6,7 @@ import { motion } from 'framer-motion'
 import { ShoppingBag, History, Users, FileText } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
+import { useAuth } from '@/lib/AuthContext'
 import { CURRENCIES, CurrencyCode, DEFAULT_CURRENCY, getCurrencyCode } from '@/lib/currency'
 
 const SETTINGS_LINKS: { href: string; icon: LucideIcon; title: string; description: string }[] = [
@@ -120,12 +121,17 @@ function CurrencySetting() {
 }
 
 export default function SettingsPage() {
+  const { profile } = useAuth()
+  // Org settings (currency) are admin-only (RLS-enforced). Non-admins still
+  // reach this hub for the links below, just without the currency control.
+  const isAdmin = profile?.role === 'admin'
+
   return (
     <main className="max-w-5xl mx-auto px-4 py-12">
       <h1 className="text-3xl sm:text-4xl font-bold text-gray-100 mb-2">Settings</h1>
       <p className="text-gray-400 mb-8">Less frequently used management and admin tools.</p>
 
-      <CurrencySetting />
+      {isAdmin && <CurrencySetting />}
 
       <div className="grid md:grid-cols-3 gap-6">
         {SETTINGS_LINKS.map((link, i) => (

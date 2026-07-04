@@ -1,6 +1,9 @@
 // Suitely service worker — minimal, hand-rolled (no Workbox).
 // Bump CACHE_VERSION on any change to this file to purge old caches on deploy.
-const CACHE_VERSION = "suitely-v1";
+// NOTE: only registered in production now (see ServiceWorkerRegister.tsx) —
+// in dev it was serving stale /_next/static chunks cache-first, making code
+// edits appear to never take. v2 bump forces existing installs to purge.
+const CACHE_VERSION = "suitely-v2";
 const OFFLINE_URL = "/offline";
 
 // Pre-cache the offline fallback so it's available even on a cold, offline start.

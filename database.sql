@@ -36,6 +36,7 @@
 -- ---------------------------------------------------------------------
 DROP TABLE IF EXISTS invoices CASCADE;
 DROP TABLE IF EXISTS invoice_counters CASCADE;
+DROP TABLE IF EXISTS staff_pins CASCADE;
 DROP TABLE IF EXISTS payments CASCADE;
 DROP TABLE IF EXISTS reservation_guests CASCADE;
 DROP TABLE IF EXISTS items CASCADE;
@@ -331,6 +332,24 @@ CREATE TABLE invoice_counters (
   PRIMARY KEY (org_id, period)
 );
 
+-- Shared-terminal identity confirmation PINs (replaces the old
+-- password-based confirm-identity flow — see app/api/confirm-identity).
+-- pin_hash is "salt:scryptHash" (lib/pin.ts, Node's built-in crypto, no new
+-- dependency) — NEVER a raw PIN. This table has RLS enabled with NO
+-- policies at all (same as invoice_counters below): a 4-digit PIN space is
+-- brute-forceable offline in well under a second, so it must never be
+-- reachable via the anon key even though `users` reads are org-wide.
+-- Only service-role API routes (app/api/staff/set-pin, app/api/confirm-
+-- identity) ever touch this table.
+CREATE TABLE staff_pins (
+  user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  pin_hash TEXT NOT NULL,
+  failed_attempts INT NOT NULL DEFAULT 0,
+  locked_until TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ---------------------------------------------------------------------
 -- Indexes
 -- ---------------------------------------------------------------------
@@ -353,6 +372,7 @@ CREATE INDEX idx_audit_logs_org_entity ON audit_logs(org_id, entity_type, entity
 CREATE INDEX idx_reservation_charges_org_reservation ON reservation_charges(org_id, reservation_id);
 CREATE INDEX idx_payments_org_reservation ON payments(org_id, reservation_id);
 CREATE INDEX idx_invoices_org_reservation ON invoices(org_id, reservation_id);
+CREATE INDEX idx_staff_pins_org_id ON staff_pins(org_id);
 
 -- ---------------------------------------------------------------------
 -- Realtime: REPLICA IDENTITY FULL
@@ -420,6 +440,7 @@ ALTER TABLE reservation_guests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE invoice_counters ENABLE ROW LEVEL SECURITY;
+ALTER TABLE staff_pins ENABLE ROW LEVEL SECURITY;
 
 -- --- organizations -------------------------------------------------
 -- Org names aren't sensitive; the auth-only SELECT/INSERT sidesteps the
@@ -649,6 +670,8 @@ CREATE POLICY "Managers can update invoices" ON invoices
   WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
 
 -- --- invoice_counters (no policies: only the definer RPC touches it) --
+
+-- --- staff_pins (no policies: only service-role API routes touch it) --
 
 -- =====================================================================
 -- Triggers: audit trail (append-only; all SECURITY DEFINER so they can

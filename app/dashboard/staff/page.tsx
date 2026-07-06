@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
 import { supabase, getFreshAccessToken } from '@/lib/supabase'
 import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { useAuth } from '@/lib/AuthContext'
@@ -84,14 +84,40 @@ export default function StaffPage() {
   // before clicking Approve/Reject, not persisted until then.
   const [leaveReviewNotes, setLeaveReviewNotes] = useState<Record<string, string>>({})
 
+  // Identity-confirmation PIN status (staff_pins), admin/manager only. The
+  // hash itself is never fetched — /api/staff/set-pin's GET only returns
+  // which staffers have one configured.
+  const [pinStatus, setPinStatus] = useState<Record<string, boolean>>({})
+  const [pinDialogFor, setPinDialogFor] = useState<User | null>(null)
+  const [pinValue, setPinValue] = useState('')
+  const [pinConfirmValue, setPinConfirmValue] = useState('')
+  const [pinFormError, setPinFormError] = useState('')
+  const [pinSubmitting, setPinSubmitting] = useState(false)
+
   useEffect(() => {
     loadData()
+    if (canManageStaff) loadPinStatus()
   }, [])
 
   useRealtimeRefresh(
     ['users', 'staff_schedules', 'attendance_logs', 'leave_requests'],
     () => loadData()
   )
+
+  const loadPinStatus = async () => {
+    try {
+      const accessToken = await getFreshAccessToken()
+      if (!accessToken) return
+      const res = await fetch('/api/staff/set-pin', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      if (!res.ok) return
+      const result = await res.json()
+      setPinStatus(result.hasPin || {})
+    } catch (err) {
+      console.error('Failed to load PIN status:', err)
+    }
+  }
 
   const loadData = async () => {
     try {
@@ -243,6 +269,67 @@ export default function StaffPage() {
       return
     }
     loadData()
+  }
+
+  const openPinDialog = (member: User) => {
+    setPinDialogFor(member)
+    setPinValue('')
+    setPinConfirmValue('')
+    setPinFormError('')
+  }
+
+  const closePinDialog = () => {
+    setPinDialogFor(null)
+    setPinValue('')
+    setPinConfirmValue('')
+    setPinFormError('')
+    setPinSubmitting(false)
+  }
+
+  const handleSetPinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!pinDialogFor) return
+    setPinFormError('')
+
+    if (!/^\d{4}$/.test(pinValue)) {
+      setPinFormError('PIN must be exactly 4 digits.')
+      return
+    }
+    if (pinValue !== pinConfirmValue) {
+      setPinFormError('PINs do not match.')
+      return
+    }
+
+    setPinSubmitting(true)
+    try {
+      const accessToken = await getFreshAccessToken()
+      if (!accessToken) {
+        setPinFormError('Session expired — sign in again.')
+        setPinSubmitting(false)
+        return
+      }
+      const res = await fetch('/api/staff/set-pin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ userId: pinDialogFor.id, pin: pinValue }),
+      })
+      const result = await res.json()
+      if (!res.ok) {
+        setPinFormError(result.error || 'Failed to set PIN.')
+        setPinSubmitting(false)
+        return
+      }
+
+      setPinStatus((prev) => ({ ...prev, [pinDialogFor.id]: true }))
+      closePinDialog()
+    } catch (err) {
+      console.error('Failed to set PIN:', err)
+      setPinFormError('Could not reach the server. Try again.')
+      setPinSubmitting(false)
+    }
   }
 
   const handleScheduleSubmit = async (e: React.FormEvent) => {
@@ -656,6 +743,11 @@ export default function StaffPage() {
                     </th>
                     {canManageStaff && (
                       <th className="px-6 py-3 text-left text-gray-300 font-semibold">
+                        PIN
+                      </th>
+                    )}
+                    {canManageStaff && (
+                      <th className="px-6 py-3 text-left text-gray-300 font-semibold">
                         Actions
                       </th>
                     )}
@@ -683,6 +775,27 @@ export default function StaffPage() {
                           {member.role}
                         </span>
                       </td>
+                      {canManageStaff && (
+                        <td className="px-6 py-3">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${
+                                pinStatus[member.id]
+                                  ? 'bg-green-500/20 text-green-300'
+                                  : 'bg-gray-700/50 text-gray-400'
+                              }`}
+                            >
+                              {pinStatus[member.id] ? 'PIN set' : 'No PIN'}
+                            </span>
+                            <button
+                              onClick={() => openPinDialog(member)}
+                              className="text-indigo-400 hover:text-indigo-300 text-sm font-semibold"
+                            >
+                              {pinStatus[member.id] ? 'Reset' : 'Set'}
+                            </button>
+                          </div>
+                        </td>
+                      )}
                       {canManageStaff && (
                         <td className="px-6 py-3">
                           <div className="flex gap-3">
@@ -1364,6 +1477,92 @@ export default function StaffPage() {
             </div>
           )}
         </div>
+
+        <AnimatePresence>
+          {pinDialogFor && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4"
+              onClick={closePinDialog}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 8 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 8 }}
+                transition={{ duration: 0.15 }}
+                onClick={(e) => e.stopPropagation()}
+                className="w-full max-w-sm bg-gray-900 border border-gray-800 rounded-lg shadow-xl shadow-black/50 p-6"
+              >
+                <h2 className="text-lg font-bold text-gray-100">
+                  {pinStatus[pinDialogFor.id] ? 'Reset' : 'Set'} PIN — {pinDialogFor.name}
+                </h2>
+                <p className="text-sm text-gray-400 mt-2">
+                  This 4-digit PIN is used to confirm {pinDialogFor.name}&apos;s identity on
+                  booking/check-in/check-out/payment/invoice actions.
+                </p>
+
+                {pinFormError && (
+                  <div className="mt-4 px-3 py-2 rounded-lg bg-red-500/10 text-red-300 border border-red-500/30 text-sm">
+                    {pinFormError}
+                  </div>
+                )}
+
+                <form onSubmit={handleSetPinSubmit} className="mt-4 space-y-3">
+                  <div>
+                    <label className="block text-gray-400 text-xs font-semibold mb-1">
+                      New PIN
+                    </label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={4}
+                      value={pinValue}
+                      onChange={(e) => setPinValue(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      autoFocus
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm tracking-widest"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-gray-400 text-xs font-semibold mb-1">
+                      Confirm PIN
+                    </label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      maxLength={4}
+                      value={pinConfirmValue}
+                      onChange={(e) =>
+                        setPinConfirmValue(e.target.value.replace(/\D/g, '').slice(0, 4))
+                      }
+                      className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm tracking-widest"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={closePinDialog}
+                      className="px-4 py-2 rounded-lg text-sm font-semibold text-gray-300 bg-gray-800 hover:bg-gray-700 transition"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={pinSubmitting}
+                      className="px-4 py-2 rounded-lg text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-500 transition disabled:opacity-50"
+                    >
+                      {pinSubmitting ? 'Saving…' : 'Save PIN'}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
   )
 }

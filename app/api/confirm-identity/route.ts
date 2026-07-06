@@ -1,19 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { getSupabaseAdmin } from '@/lib/supabaseAdmin'
+import { verifyPin } from '@/lib/pin'
 
 // Stage 4 — shared-terminal identity confirmation.
 // The front desk often leaves ONE session logged in all shift, so the audit
-// trail's auth.uid() actor is the terminal, not the person who acted. Before a
-// book / check-in / check-out / payment / invoice action, the acting staffer
-// picks their name and enters their password; this route verifies that
-// password against Supabase Auth and — atomically, from the same verified
-// email — writes an audit_logs 'confirm' row attributing the action to THEM.
+// trail's auth.uid() actor is the terminal, not the person who acted. Before
+// a book / check-in / check-out / payment / invoice action, the acting
+// staffer picks their name and enters their 4-digit PIN (set by an
+// admin/manager via app/api/staff/set-pin); this route verifies the PIN
+// against staff_pins and — atomically — writes an audit_logs 'confirm' row
+// attributing the action to THEM.
 //
-// Verification uses a throwaway server-side client (never the browser session,
-// so the shared login is untouched). Because the actor is derived from the
-// verified email (not a client-supplied id), you can't pin an action on a
-// colleague without knowing their password.
+// Deliberately does NOT require the shared terminal's own session/bearer
+// token to be valid — that used to be the failure mode ("Session expired")
+// on a long-lived shift session, unrelated to who's actually confirming.
+// org_id is trusted from the request body, same as every other client query
+// in this app (see CLAUDE.md: "Always filter by org_id from localStorage").
+// The staff_pins table itself has no RLS SELECT policy at all, so a PIN
+// hash is never reachable except through this service-role route, and a
+// 5-attempt/15-minute lockout makes the 10,000-combination PIN space
+// impractical to brute-force even without caller auth.
 
 const ACTION_SUMMARY: Record<string, string> = {
   book: 'Booking authorized',
@@ -23,76 +29,89 @@ const ACTION_SUMMARY: Record<string, string> = {
   invoice: 'Invoice authorized',
 }
 
+const MAX_ATTEMPTS = 5
+const LOCKOUT_MINUTES = 15
+
 export async function POST(request: NextRequest) {
   const supabaseAdmin = getSupabaseAdmin()
-  const authHeader = request.headers.get('authorization') || ''
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : ''
-
-  if (!token) {
-    return NextResponse.json({ error: 'Missing authorization token' }, { status: 401 })
-  }
-
-  // Who's driving the terminal (the shared session). Used only to scope the
-  // confirmation to this hotel — never trusted as the actor. The client sends
-  // a freshly-refreshed token (getFreshAccessToken in lib/supabase.ts), so a
-  // rejection here means the login genuinely expired — re-login required.
-  const { data: callerData, error: callerError } = await supabaseAdmin.auth.getUser(token)
-  if (callerError || !callerData.user) {
-    return NextResponse.json({ error: 'Session expired — please sign in again.' }, { status: 401 })
-  }
-
-  const { data: callerProfile } = await supabaseAdmin
-    .from('users')
-    .select('org_id')
-    .eq('id', callerData.user.id)
-    .single()
-
-  if (!callerProfile) {
-    return NextResponse.json({ error: 'Caller profile not found' }, { status: 403 })
-  }
 
   const body = await request.json()
-  const { email, password, action, entityId } = body as {
-    email?: string
-    password?: string
+  const { orgId, userId, pin, action, entityId } = body as {
+    orgId?: string
+    userId?: string
+    pin?: string
     action?: string
     entityId?: string | null
   }
 
-  if (!email || !password || !action || !ACTION_SUMMARY[action]) {
-    return NextResponse.json({ error: 'email, password, and a valid action are required' }, { status: 400 })
+  if (!orgId || !userId || !pin || !action || !ACTION_SUMMARY[action]) {
+    return NextResponse.json(
+      { error: 'orgId, userId, pin, and a valid action are required' },
+      { status: 400 }
+    )
   }
 
-  // The acting staffer must belong to THIS hotel.
   const { data: actor } = await supabaseAdmin
     .from('users')
     .select('id, name, org_id, role')
-    .eq('org_id', callerProfile.org_id)
-    .eq('email', email)
+    .eq('org_id', orgId)
+    .eq('id', userId)
     .single()
 
   if (!actor) {
     return NextResponse.json({ error: 'That staff member is not part of this hotel.' }, { status: 403 })
   }
 
-  // Verify the password on an isolated client so the browser's shared session
-  // is never touched. A successful sign-in proves the staffer's identity.
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  const verifier = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  })
+  const { data: pinRow } = await supabaseAdmin
+    .from('staff_pins')
+    .select('pin_hash, failed_attempts, locked_until')
+    .eq('user_id', userId)
+    .eq('org_id', orgId)
+    .single()
 
-  const { data: signIn, error: signInError } = await verifier.auth.signInWithPassword({
-    email,
-    password,
-  })
-  // Discard the throwaway session immediately.
-  await verifier.auth.signOut()
-
-  if (signInError || !signIn.user || signIn.user.id !== actor.id) {
-    return NextResponse.json({ error: 'Incorrect password.' }, { status: 401 })
+  if (!pinRow) {
+    return NextResponse.json(
+      { error: 'No PIN set for this staff member. Ask an admin/manager to set one in Settings → Staff.' },
+      { status: 400 }
+    )
   }
+
+  if (pinRow.locked_until && new Date(pinRow.locked_until).getTime() > Date.now()) {
+    const minutesLeft = Math.ceil((new Date(pinRow.locked_until).getTime() - Date.now()) / 60_000)
+    return NextResponse.json(
+      { error: `Too many incorrect attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.` },
+      { status: 429 }
+    )
+  }
+
+  if (!verifyPin(pin, pinRow.pin_hash)) {
+    const attempts = pinRow.failed_attempts + 1
+    const lockedOut = attempts >= MAX_ATTEMPTS
+    await supabaseAdmin
+      .from('staff_pins')
+      .update({
+        failed_attempts: lockedOut ? 0 : attempts,
+        locked_until: lockedOut ? new Date(Date.now() + LOCKOUT_MINUTES * 60_000).toISOString() : null,
+      })
+      .eq('user_id', userId)
+      .eq('org_id', orgId)
+
+    return NextResponse.json(
+      {
+        error: lockedOut
+          ? `Too many incorrect attempts. Try again in ${LOCKOUT_MINUTES} minutes.`
+          : `Incorrect PIN. ${MAX_ATTEMPTS - attempts} attempt${MAX_ATTEMPTS - attempts === 1 ? '' : 's'} remaining.`,
+      },
+      { status: lockedOut ? 429 : 401 }
+    )
+  }
+
+  // Correct PIN — clear any prior failed attempts.
+  await supabaseAdmin
+    .from('staff_pins')
+    .update({ failed_attempts: 0, locked_until: null })
+    .eq('user_id', userId)
+    .eq('org_id', orgId)
 
   // Attribute the action to the verified staffer. entity_id ties it to the
   // reservation when we have one (check-in/out/payment/invoice) so it threads
@@ -101,7 +120,7 @@ export async function POST(request: NextRequest) {
   const anchorId = entityId || actor.id
   const { error: logError } = await supabaseAdmin.from('audit_logs').insert([
     {
-      org_id: callerProfile.org_id,
+      org_id: orgId,
       entity_type: 'confirmation',
       entity_id: anchorId,
       action: 'confirm',

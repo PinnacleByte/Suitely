@@ -11,16 +11,21 @@ import {
 } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ShieldCheck } from 'lucide-react'
-import { supabase, getFreshAccessToken } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
 import { User } from '@/lib/types'
 
 // Stage 4 — shared-terminal identity confirmation.
 // Promise-based, mounted once in the dashboard layout (like ConfirmProvider).
 // A call site does:
 //   const actor = await confirmIdentity({ action: 'check_out', entityId })
-//   if (!actor) return   // cancelled or wrong password
-// The staffer picks their name + enters their password; the server verifies it
-// and records who authorized the action (see app/api/confirm-identity).
+//   if (!actor) return   // cancelled or wrong PIN
+// The staffer picks their name + enters their 4-digit PIN (set by an
+// admin/manager via Settings -> Staff); the server verifies it against
+// staff_pins and records who authorized the action (see
+// app/api/confirm-identity). Deliberately does NOT send the shared
+// terminal's own session token — that was the source of the old "Session
+// expired" errors on a long-lived shift session; org scoping goes through
+// orgId from localStorage instead, same as every other query in this app.
 
 export type ConfirmAction = 'book' | 'check_in' | 'check_out' | 'payment' | 'invoice'
 
@@ -45,8 +50,8 @@ const IdentityContext = createContext<IdentityContextValue | null>(null)
 export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const [staff, setStaff] = useState<User[]>([])
-  const [selectedEmail, setSelectedEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const [selectedUserId, setSelectedUserId] = useState('')
+  const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const resolver = useRef<((value: ConfirmedActor | null) => void) | null>(null)
@@ -69,7 +74,7 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
 
   const close = useCallback((value: ConfirmedActor | null) => {
     setRequest(null)
-    setPassword('')
+    setPin('')
     setError('')
     setSubmitting(false)
     resolver.current?.(value)
@@ -78,7 +83,7 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
 
   const confirmIdentity = useCallback((req: ConfirmRequest) => {
     setRequest(req)
-    setPassword('')
+    setPin('')
     setError('')
     return new Promise<ConfirmedActor | null>((resolve) => {
       resolver.current = resolve
@@ -90,30 +95,26 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
     if (!request) return
     setError('')
 
-    if (!selectedEmail) {
+    if (!selectedUserId) {
       setError('Select your name.')
+      return
+    }
+
+    const orgId = localStorage.getItem('orgId')
+    if (!orgId) {
+      setError('No hotel selected — sign in again.')
       return
     }
 
     setSubmitting(true)
     try {
-      // Pull a fresh token from the auth client (not a possibly-stale context
-      // snapshot) so the server's getUser() never rejects an expired JWT.
-      const accessToken = await getFreshAccessToken()
-      if (!accessToken) {
-        setError('Session expired — sign in again.')
-        setSubmitting(false)
-        return
-      }
       const res = await fetch('/api/confirm-identity', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: selectedEmail,
-          password,
+          orgId,
+          userId: selectedUserId,
+          pin,
           action: request.action,
           entityId: request.entityId ?? null,
         }),
@@ -157,7 +158,7 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
                 <ShieldCheck className="w-5 h-5 text-indigo-400" /> Confirm your identity
               </h2>
               <p className="text-sm text-gray-400 mt-2">
-                Enter your password to {ACTION_LABEL[request.action]}. This records who is
+                Enter your PIN to {ACTION_LABEL[request.action]}. This records who is
                 responsible for the action.
               </p>
 
@@ -173,13 +174,13 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
                     Your name
                   </label>
                   <select
-                    value={selectedEmail}
-                    onChange={(e) => setSelectedEmail(e.target.value)}
+                    value={selectedUserId}
+                    onChange={(e) => setSelectedUserId(e.target.value)}
                     className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm"
                   >
                     <option value="">Select…</option>
                     {staff.map((s) => (
-                      <option key={s.id} value={s.email}>
+                      <option key={s.id} value={s.id}>
                         {s.name} ({s.role})
                       </option>
                     ))}
@@ -187,14 +188,17 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
                 </div>
                 <div>
                   <label className="block text-gray-400 text-xs font-semibold mb-1">
-                    Password
+                    PIN
                   </label>
                   <input
                     type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={4}
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
                     autoFocus
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-100 text-sm tracking-widest"
                   />
                 </div>
 

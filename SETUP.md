@@ -42,7 +42,7 @@ NEXT_PUBLIC_SETUP_ENABLED=true
 ### 6. Enable Realtime (live sync)
 The app uses Supabase Realtime so a booking/check-in on one screen shows up on the others without a reload. Turn it on:
 1. Supabase dashboard → **Database → Publications**
-2. Open the `supabase_realtime` publication and add the app tables (`reservations`, `rooms`, `room_types`, `reservation_charges`, `payments`, `staff_schedules`, `users`, `maintenance_logs`, `items`, `invoices`, `reservation_guests`, `audit_logs`).
+2. Open the `supabase_realtime` publication and add the app tables (`reservations`, `rooms`, `room_types`, `reservation_charges`, `payments`, `staff_schedules`, `users`, `maintenance_logs`, `items`, `invoices`, `reservation_guests`, `audit_logs`, `attendance_logs`, `leave_requests`, `staff_compensation`, `payroll_runs`, `payroll_run_adjustments`, `expenses`).
 
 The schema already sets `REPLICA IDENTITY FULL` on those tables (so *updates and deletes* propagate, not just inserts). If you ever drop/recreate tables, remember the publication membership is lost and must be re-added.
 
@@ -69,12 +69,15 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 │   │   ├── housekeeping/          # Cleaning queue + maintenance tracker
 │   │   ├── items/                 # Priced items catalog
 │   │   ├── invoices/              # Issued-invoice list (search + status filter)
-│   │   ├── settings/              # Hub: Items/Invoices/Activity Log/Staff + currency
-│   │   ├── staff/                 # Staff & scheduling (add/edit/delete)
+│   │   ├── accounts/              # Accounts / P&L (revenue, expenses, charts, statement)
+│   │   ├── payroll/               # Compensation rates + payroll runs
+│   │   ├── settings/              # Hub: Accounts/Items/Invoices/Activity Log/Staff/Payroll + currency
+│   │   ├── staff/                 # Staff, schedules, attendance, leave requests
 │   │   └── page.tsx               # Dashboard home
 │   ├── login/                     # Shared login (admin + staff)
 │   ├── setup/                     # Initial setup wizard (env-flag gated)
 │   ├── api/staff/create/          # Service-role staff provisioning route
+│   ├── api/confirm-identity/      # Shared-terminal password verification + attribution
 │   └── page.tsx                   # Landing page
 ├── components/                   # Reusable React components
 │   ├── DashboardNav.tsx           # Navigation bar
@@ -87,17 +90,23 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 │   ├── ActivityCalendar.tsx       # Month-grid activity date filter
 │   └── ServiceWorkerRegister.tsx  # PWA service worker (production only)
 ├── lib/
-│   ├── supabase.ts                # Browser Supabase client
+│   ├── supabase.ts                # Browser client + getFreshAccessToken()
 │   ├── supabaseAdmin.ts           # Server-only service-role client
 │   ├── AuthContext.tsx            # Session/profile context (+ localStorage mirror)
 │   ├── ConfirmDialog.tsx          # Promise-based confirm/alert dialog
+│   ├── IdentityConfirm.tsx        # Shared-terminal identity gate (password confirm)
 │   ├── useRealtimeRefresh.ts      # Supabase Realtime refetch hook
 │   ├── currency.ts                # Per-org currency + formatMoney
+│   ├── accounts.ts                # P&L math (revenue/expense/statement/trend)
+│   ├── payroll.ts                 # Pay-computation formula (shared)
 │   ├── printInvoice.ts            # Snapshot-driven invoice print
+│   ├── printPayslip.ts            # Snapshot-driven payslip print
+│   ├── printStatement.ts          # On-demand P&L statement print
 │   ├── formatDate.ts              # IST timestamp formatting
 │   └── types.ts                   # TypeScript type definitions
 ├── database.sql                  # Full schema (clean, re-runnable, role-based RLS)
-├── public/sw.js                  # PWA service worker
+├── migrations/                   # Standalone additive migrations for a live DB
+├── public/sw.js                  # PWA service worker (self-destructs on localhost)
 └── .env.local.example            # Environment template
 ```
 
@@ -126,11 +135,14 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 - **Housekeeping & Maintenance**: cleaning queue for post-checkout turnaround, and a maintenance issue tracker that automatically takes a room out of service and hands it back
 - **Items Catalog**: staff-managed priced list for quick folio charges
 - **Audit Trail**: Every reservation and folio-charge create/edit/delete is recorded with a human-readable description (who + what + when), visible per-reservation and in a full activity log with a date-filter calendar — survives even after the reservation is deleted
-- **Staff Management**:
-  - Add staff members with roles (admin, manager, staff) and a real login
-  - Create shift schedules
-  - Assign positions and notes
-- **Dashboard**: Overview of key metrics, with actionable arrivals/departures
+- **Staff Management** (Settings → Staff / Payroll):
+  - Add staff members with roles (admin, manager, staff) and a real login; create shift schedules
+  - **Attendance** — daily roll call + log (manager/admin-write, org-wide read)
+  - **Leave requests** — staff self-request; manager/admin approve/reject
+  - **Compensation & payroll** — append-only pay rates and draft→finalized→paid runs with immutable payslip snapshots and print (reads restricted to self + manager)
+- **Accounts / Financials** (Settings → Accounts, managers/admins): a profit & loss section — categorized revenue (accrual) and expenses (operating + auto-derived payroll), net profit/loss, weekly/monthly charts, and a printable financial statement
+- **Shared-terminal accountability**: booking / check-in / check-out / payment / invoice each require the acting staffer to confirm their password, attributing the action to the real person in the audit trail
+- **Dashboard**: Front-desk operations board — occupancy glance, actionable arrivals/departures, staff on shift, attendance & pay glance, and a manager-only financials section
 
 ---
 
@@ -148,8 +160,13 @@ Visit `http://localhost:3000` and click "First Time Setup" to create your admin 
 - `invoices` - Immutable issued invoices (frozen snapshot, void-not-delete)
 - `invoice_counters` - Per-(org, month) sequence backing race-safe invoice numbers
 - `items` - Staff-managed priced catalog for quick folio charges
-- `audit_logs` - Create/update/delete trail (reservations + folio charges + payments)
+- `audit_logs` - Create/update/delete + identity-confirm trail (reservations, folio, payments, staff)
 - `staff_schedules` - Work schedules
+- `attendance_logs` - Daily attendance (manager-write, org-wide read)
+- `leave_requests` - Staff leave requests (self-request; manager approve/reject)
+- `staff_compensation` - Append-only pay-rate history (reads restricted to self + manager)
+- `payroll_runs` / `payroll_run_adjustments` - Payroll runs (draft→finalized→paid) + bonus/deduction lines (reads restricted)
+- `expenses` - Operating expenses for the Accounts P&L (reads restricted to manager/admin)
 - `maintenance_logs` - Maintenance tracking
 
 All tables include Row-Level Security (RLS) scoped to the authenticated user's organization (`org_id = current_org_id()`). **Writes are additionally role-scoped** via a `current_user_role()` helper (admin / manager / staff); reads stay open to any org member. See the matrix in [CLAUDE.md](CLAUDE.md#multi-tenancy-model).
@@ -200,12 +217,13 @@ All tables include Row-Level Security (RLS) scoped to the authenticated user's o
 
 **Raised, not yet built:**
 - [ ] Guest profiles / repeat-guest recognition
-- [ ] Occupancy/ADR/RevPAR dashboard reporting (revenue + outstanding balance exist)
+- [ ] Occupancy/ADR/RevPAR dashboard reporting (revenue, outstanding balance, and a P&L exist; no ADR/RevPAR)
 - [ ] Visual room/date availability chart
 - [ ] Password-reset flow
 - [ ] Configurable tax rate (billing Phase C — slot reserved on invoices)
+- [ ] Edit/delete a finalized payslip (immutable by design today — deferred)
 
-*(Done since earlier drafts: reservation search/filter, role-based permission enforcement, billing/payments/invoices, per-org currency, live data sync, PWA.)*
+*(Done since earlier drafts: reservation search/filter, role-based permission enforcement, shared-terminal identity confirmation, billing/payments/invoices, per-org currency, live data sync, PWA, advanced staff management (attendance/leave/payroll), and the Accounts / P&L section.)*
 
 **Phase 3+:**
 - [ ] Guest self-service booking portal
@@ -236,7 +254,7 @@ All tables include Row-Level Security (RLS) scoped to the authenticated user's o
 - Your Supabase project is on an older schema. Since `database.sql` is now self-contained and re-runnable, just re-run the whole file (⚠ it resets all app data). Common culprits: `mark_room_clean`/`current_user_role` missing → role-RLS section not applied.
 
 ### "My code change / setup screen didn't take effect" (dev)
-- The **PWA service worker** is caching stale assets. It's disabled in dev now, but if you were running an older build, clear it once: DevTools → **Application → Clear site data**, then reload. A dev-server restart alone won't fix it. (See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).)
+- The **PWA service worker** was caching stale assets. `public/sw.js` now **self-destructs on localhost** (no caching in dev; it purges + unregisters on load), so a plain reload heals it. Only if a very old pre-self-destruct worker is somehow still installed: DevTools → **Application → Clear site data**, then reload. (See [TROUBLESHOOTING.md](TROUBLESHOOTING.md).)
 
 ### Setup page says "self-service setup is currently unavailable"
 - Set `NEXT_PUBLIC_SETUP_ENABLED=true` in `.env.local` and **restart** the dev server (env vars don't hot-reload).

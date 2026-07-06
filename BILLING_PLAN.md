@@ -217,7 +217,9 @@ Pure client-side aggregation on the dashboard (no migration). Shipped:
 - **Revenue includes folio charges** — the dashboard now loads `reservation_charges` + `payments` and computes `folioTotal(r) = total_price + Σ charges`; both revenue figures use it (closes the CLAUDE.md gap).
 - **Outstanding Balance card** — `Σ max(0, folioTotal − payments)` across active reservations, with a count of how many are owing (positive-balance only; overpayment/deposit is a credit, not a receivable).
 
-Verified with `npx tsc --noEmit`. A dedicated Accounts Receivable / unpaid-invoices view was **not** built (the dashboard card + the `/dashboard/invoices` status filter cover the need for now); revisit if AR aging is wanted. ADR/RevPAR/occupancy KPIs remain out of scope.
+Verified with `npx tsc --noEmit`. A dedicated Accounts Receivable / unpaid-invoices view was **not** built at the time (the dashboard card + the `/dashboard/invoices` status filter cover the need for now); revisit if AR aging is wanted. ADR/RevPAR/occupancy KPIs remain out of scope.
+
+> **Update (2026-07-05):** a full **Accounts / Financials (P&L)** section was later built at `/dashboard/accounts` (managers/admins) — categorized accrual revenue (matching this dashboard definition) + operating expenses + auto-derived payroll, weekly/monthly charts, and a printable statement. See CLAUDE.md's "Accounts / Financials" section. Tax (Phase C) is still deferred; the statement's tax slot ties into `invoices.tax_total` when it lands.
 
 ---
 

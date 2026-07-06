@@ -11,8 +11,7 @@ import {
 } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { ShieldCheck } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
-import { useAuth } from '@/lib/AuthContext'
+import { supabase, getFreshAccessToken } from '@/lib/supabase'
 import { User } from '@/lib/types'
 
 // Stage 4 — shared-terminal identity confirmation.
@@ -44,7 +43,6 @@ type IdentityContextValue = {
 const IdentityContext = createContext<IdentityContextValue | null>(null)
 
 export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
-  const { session } = useAuth()
   const [request, setRequest] = useState<ConfirmRequest | null>(null)
   const [staff, setStaff] = useState<User[]>([])
   const [selectedEmail, setSelectedEmail] = useState('')
@@ -96,18 +94,22 @@ export function IdentityConfirmProvider({ children }: { children: ReactNode }) {
       setError('Select your name.')
       return
     }
-    if (!session) {
-      setError('Session expired — sign in again.')
-      return
-    }
 
     setSubmitting(true)
     try {
+      // Pull a fresh token from the auth client (not a possibly-stale context
+      // snapshot) so the server's getUser() never rejects an expired JWT.
+      const accessToken = await getFreshAccessToken()
+      if (!accessToken) {
+        setError('Session expired — sign in again.')
+        setSubmitting(false)
+        return
+      }
       const res = await fetch('/api/confirm-identity', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           email: selectedEmail,

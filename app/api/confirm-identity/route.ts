@@ -33,10 +33,12 @@ export async function POST(request: NextRequest) {
   }
 
   // Who's driving the terminal (the shared session). Used only to scope the
-  // confirmation to this hotel — never trusted as the actor.
+  // confirmation to this hotel — never trusted as the actor. The client sends
+  // a freshly-refreshed token (getFreshAccessToken in lib/supabase.ts), so a
+  // rejection here means the login genuinely expired — re-login required.
   const { data: callerData, error: callerError } = await supabaseAdmin.auth.getUser(token)
   if (callerError || !callerData.user) {
-    return NextResponse.json({ error: 'Invalid session' }, { status: 401 })
+    return NextResponse.json({ error: 'Session expired — please sign in again.' }, { status: 401 })
   }
 
   const { data: callerProfile } = await supabaseAdmin

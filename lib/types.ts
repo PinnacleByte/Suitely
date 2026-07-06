@@ -144,6 +144,147 @@ export type StaffSchedule = {
   created_at: string
 }
 
+// Manager/admin-only daily attendance record. pay_override drives payroll
+// docking (see STAFF_MANAGEMENT_PLAN.md Phase C): null follows the default
+// rule for `status`, 'paid'/'unpaid' forces the day one way regardless.
+export type AttendanceLog = {
+  id: string
+  org_id: string
+  user_id: string
+  log_date: string
+  status: 'present' | 'absent' | 'late' | 'half_day' | 'on_leave'
+  clock_in: string | null
+  clock_out: string | null
+  pay_override: 'paid' | 'unpaid' | null
+  notes: string | null
+  recorded_by: string | null
+  created_at: string
+}
+
+// A staffer's own leave/time-off request — the one staff-writable table in
+// the whole staff-management build, and only for their own row (INSERT is
+// locked to status='pending' by RLS). Approve/reject is manager/admin only;
+// withdrawing a still-pending request is a DELETE, not a status change.
+export type LeaveRequest = {
+  id: string
+  org_id: string
+  user_id: string
+  leave_type: 'annual' | 'sick' | 'casual' | 'unpaid' | 'other'
+  start_date: string
+  end_date: string
+  reason: string | null
+  status: 'pending' | 'approved' | 'rejected'
+  reviewed_by: string | null
+  reviewed_at: string | null
+  review_note: string | null
+  created_at: string
+}
+
+// A staffer's pay rate. Append-only — a rate change is a NEW row with its
+// own effective_from, never an UPDATE of an existing one (mirrors
+// reservation_charges/payments). "Current" rate = the row with the latest
+// effective_from <= today. Reads are restricted to the staffer themselves
+// or admin/manager — the first deliberate exception to this app's usual
+// "reads are org-wide" rule, since salary is per-person sensitive.
+export type StaffCompensation = {
+  id: string
+  org_id: string
+  user_id: string
+  pay_type: 'hourly' | 'fixed'
+  rate: number
+  effective_from: string
+  notes: string | null
+  created_at: string
+}
+
+// An itemized bonus/deduction line on a draft payroll run, additive on top
+// of base_pay (positive = bonus, negative = deduction). Add/remove only,
+// and only meaningful while the parent run is still 'draft'.
+export type PayrollRunAdjustment = {
+  id: string
+  org_id: string
+  payroll_run_id: string
+  description: string
+  amount: number
+  created_at: string
+}
+
+// Frozen at finalize time into payroll_runs.snapshot — never recomputed
+// from live data afterward, same immutability guarantee as InvoiceSnapshot.
+// `days[]` is the per-day audit trail behind base_pay: exactly which days
+// were paid/half-paid/docked and why (see STAFF_MANAGEMENT_PLAN.md §6).
+export type PayrollSnapshot = {
+  staff_name: string
+  period_start: string
+  period_end: string
+  currency: string
+  pay_type: 'hourly' | 'fixed'
+  rate: number
+  days_in_month: number | null // fixed pay_type only — the divisor used
+  daily_rate: number | null // fixed pay_type only — rate / days_in_month
+  days: {
+    date: string
+    status: 'present' | 'absent' | 'late' | 'half_day' | 'on_leave' | 'unrecorded'
+    pay_override: 'paid' | 'unpaid' | null
+    amount: number
+  }[]
+  days_present: number
+  days_absent: number
+  days_half: number
+  base_pay: number
+  adjustments: { description: string; amount: number }[]
+  gross_pay: number
+  finalized_at: string
+}
+
+// A payroll run for one staffer over one period. base_pay/gross_pay are
+// live-computed while `draft`; `snapshot` is written once at finalize time
+// and never changes afterward, even if attendance/compensation are edited
+// later (same immutability guarantee as Invoice). Reads restricted like
+// StaffCompensation (self or admin/manager only).
+export type PayrollRun = {
+  id: string
+  org_id: string
+  user_id: string
+  period_start: string
+  period_end: string
+  base_pay: number
+  adjustments_total: number
+  gross_pay: number
+  status: 'draft' | 'finalized' | 'paid'
+  snapshot: PayrollSnapshot | null
+  finalized_at: string | null
+  paid_at: string | null
+  payment_method: string | null
+  created_at: string
+}
+
+// An operating expense — the expense side of the Accounts P&L. Holds only
+// operating costs (utilities, supplies, rent, ...), NEVER salaries: staff
+// cost is auto-derived from payroll_runs so it isn't double-counted. Reads
+// are RLS-restricted to admin/manager (financial data), like payroll.
+export type Expense = {
+  id: string
+  org_id: string
+  category:
+    | 'utilities'
+    | 'supplies'
+    | 'maintenance'
+    | 'marketing'
+    | 'rent'
+    | 'food_beverage'
+    | 'commissions'
+    | 'other'
+  description: string
+  amount: number
+  vendor: string | null
+  expense_date: string
+  payment_method: 'cash' | 'card' | 'upi' | 'bank_transfer' | 'other' | null
+  notes: string | null
+  recorded_by: string | null
+  created_at: string
+}
+
 export type MaintenanceLog = {
   id: string
   org_id: string

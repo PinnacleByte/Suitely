@@ -17,9 +17,85 @@ import { useRealtimeRefresh } from '@/lib/useRealtimeRefresh'
 import { todayIST } from '@/lib/formatDate'
 import { formatMoney } from '@/lib/currency'
 import { useAuth } from '@/lib/AuthContext'
-import { Organization, Room, Reservation, StaffSchedule, User, ReservationCharge, Payment } from '@/lib/types'
+import {
+  Organization,
+  Room,
+  Reservation,
+  StaffSchedule,
+  User,
+  ReservationCharge,
+  Payment,
+  AttendanceLog,
+  StaffCompensation,
+} from '@/lib/types'
+import { computeBreakdown, currentRateFor } from '@/lib/payroll'
 import CheckInDialog from '@/components/CheckInDialog'
 import CheckoutDialog from '@/components/CheckoutDialog'
+
+// Attendance status -> chart color. Reuses the app's existing badge hues
+// (see getAttendanceStatusColor in app/dashboard/staff/page.tsx) EXCEPT
+// on_leave: that page colors it purple, but purple sits at CVD ΔE 1.9 from
+// half_day's blue under deuteranopia when the two are adjacent segments in
+// a stacked bar (validated with the dataviz skill's palette checker) —
+// a real collision that badges never hit, since each badge always carries
+// its own text. Folded on_leave into the same neutral gray as "not logged"
+// instead (both are non-working-day states for pay purposes anyway).
+const ATTENDANCE_CHART_COLORS: Record<string, string> = {
+  present: '#22c55e',
+  late: '#f59e0b',
+  half_day: '#3b82f6',
+  absent: '#ef4444',
+  on_leave: '#6b7280',
+  unrecorded: '#6b7280',
+}
+
+const ATTENDANCE_LEGEND: { key: string; label: string; color: string }[] = [
+  { key: 'present', label: 'Present', color: ATTENDANCE_CHART_COLORS.present },
+  { key: 'late', label: 'Late', color: ATTENDANCE_CHART_COLORS.late },
+  { key: 'half_day', label: 'Half-day', color: ATTENDANCE_CHART_COLORS.half_day },
+  { key: 'absent', label: 'Absent', color: ATTENDANCE_CHART_COLORS.absent },
+  { key: 'leave', label: 'Leave / not logged', color: ATTENDANCE_CHART_COLORS.on_leave },
+]
+
+// Horizontal stacked bar: one segment per attendance status, width
+// proportional to its share of the elapsed days so far this month. Built in
+// plain HTML/flexbox (no chart library in this project) — the 2px flex gap
+// is the "surface gap" separating segments; rounded-full + overflow-hidden
+// on the wrapping div gives the two rounded outer ends. Zero-count
+// categories are omitted so a hidden category can't leave a stray gap next
+// to its neighbor.
+function AttendanceBar({ days }: { days: { status: string }[] }) {
+  const total = days.length
+  if (total === 0) {
+    return <div className="h-4 rounded-full bg-gray-800" />
+  }
+
+  const counts: Record<string, number> = {}
+  for (const d of days) {
+    const key = d.status === 'on_leave' || d.status === 'unrecorded' ? 'leave' : d.status
+    counts[key] = (counts[key] || 0) + 1
+  }
+
+  const segments = ATTENDANCE_LEGEND.map((entry) => ({
+    ...entry,
+    count: counts[entry.key === 'leave' ? 'leave' : entry.key] || 0,
+  })).filter((s) => s.count > 0)
+
+  return (
+    <div className="flex gap-0.5 h-4 rounded-full overflow-hidden bg-gray-800 w-full">
+      {segments.map((s) => (
+        <div
+          key={s.key}
+          role="img"
+          tabIndex={0}
+          aria-label={`${s.label}: ${s.count} of ${total} days`}
+          title={`${s.label}: ${s.count} day${s.count === 1 ? '' : 's'}`}
+          style={{ backgroundColor: s.color, flexBasis: `${(s.count / total) * 100}%` }}
+        />
+      ))}
+    </div>
+  )
+}
 
 const tileVariants = {
   hidden: { opacity: 0, y: 10 },
@@ -52,6 +128,8 @@ export default function DashboardPage() {
   const [payments, setPayments] = useState<Payment[]>([])
   const [schedules, setSchedules] = useState<StaffSchedule[]>([])
   const [staff, setStaff] = useState<User[]>([])
+  const [attendance, setAttendance] = useState<AttendanceLog[]>([])
+  const [compensation, setCompensation] = useState<StaffCompensation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [checkinTarget, setCheckinTarget] = useState<Reservation | null>(null)
@@ -60,13 +138,29 @@ export default function DashboardPage() {
   // Financial figures are a manager/owner concern, not a front-desk one —
   // a receptionist logging in doesn't see the revenue/outstanding section.
   const canSeeFinancials = profile?.role === 'admin' || profile?.role === 'manager'
+  // Same role split for the staff attendance/pay glance below: managers see
+  // everyone, a staff login sees only their own row. `compensation` is
+  // already RLS-restricted to self-or-manager, but `attendance` reads
+  // org-wide (see attendance_logs' RLS) — this flag is what keeps a staff
+  // login from rendering colleagues' rows on the client even though the
+  // fetch itself returns them.
+  const canSeeAllStaffStats = profile?.role === 'admin' || profile?.role === 'manager'
 
   useEffect(() => {
     loadDashboardData()
   }, [])
 
   useRealtimeRefresh(
-    ['rooms', 'reservations', 'reservation_charges', 'payments', 'staff_schedules', 'users'],
+    [
+      'rooms',
+      'reservations',
+      'reservation_charges',
+      'payments',
+      'staff_schedules',
+      'users',
+      'attendance_logs',
+      'staff_compensation',
+    ],
     () => loadDashboardData()
   )
 
@@ -78,16 +172,27 @@ export default function DashboardPage() {
         return
       }
 
-      const [orgData, roomsData, reservationsData, chargesData, paymentsData, schedulesData, staffData] =
-        await Promise.all([
-          supabase.from('organizations').select('*').eq('id', orgId).single(),
-          supabase.from('rooms').select('*').eq('org_id', orgId),
-          supabase.from('reservations').select('*').eq('org_id', orgId),
-          supabase.from('reservation_charges').select('*').eq('org_id', orgId),
-          supabase.from('payments').select('*').eq('org_id', orgId),
-          supabase.from('staff_schedules').select('*').eq('org_id', orgId),
-          supabase.from('users').select('*').eq('org_id', orgId),
-        ])
+      const [
+        orgData,
+        roomsData,
+        reservationsData,
+        chargesData,
+        paymentsData,
+        schedulesData,
+        staffData,
+        attendanceData,
+        compensationData,
+      ] = await Promise.all([
+        supabase.from('organizations').select('*').eq('id', orgId).single(),
+        supabase.from('rooms').select('*').eq('org_id', orgId),
+        supabase.from('reservations').select('*').eq('org_id', orgId),
+        supabase.from('reservation_charges').select('*').eq('org_id', orgId),
+        supabase.from('payments').select('*').eq('org_id', orgId),
+        supabase.from('staff_schedules').select('*').eq('org_id', orgId),
+        supabase.from('users').select('*').eq('org_id', orgId),
+        supabase.from('attendance_logs').select('*').eq('org_id', orgId),
+        supabase.from('staff_compensation').select('*').eq('org_id', orgId),
+      ])
 
       if (orgData.data) setOrg(orgData.data as Organization)
       setRooms((roomsData.data as Room[]) || [])
@@ -96,6 +201,8 @@ export default function DashboardPage() {
       setPayments((paymentsData.data as Payment[]) || [])
       setSchedules((schedulesData.data as StaffSchedule[]) || [])
       setStaff((staffData.data as User[]) || [])
+      setAttendance((attendanceData.data as AttendanceLog[]) || [])
+      setCompensation((compensationData.data as StaffCompensation[]) || [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
@@ -162,6 +269,22 @@ export default function DashboardPage() {
     .filter((s) => s.shift_date === today)
     .sort((a, b) => a.start_time.localeCompare(b.start_time))
   const staffName = (userId: string) => staff.find((s) => s.id === userId)?.name || 'Unknown'
+
+  // Month-to-date attendance + accrued pay per staffer, for the glance
+  // widget below. period is monthStart..today (not the full month) — it's
+  // a live "so far" figure, not a payroll run; nothing here writes a
+  // payroll_runs row. Managers see every staffer; a staff login sees only
+  // their own (canSeeAllStaffStats gates which ids this iterates).
+  const monthStart = `${thisMonth}-01`
+  const staffForStats = canSeeAllStaffStats ? staff : staff.filter((s) => s.id === profile?.id)
+  const staffStats = staffForStats.map((member) => {
+    const memberAttendance = attendance.filter(
+      (a) => a.user_id === member.id && a.log_date >= monthStart && a.log_date <= today
+    )
+    const comp = currentRateFor(compensation, member.id, today)
+    const breakdown = comp ? computeBreakdown(comp, monthStart, today, memberAttendance) : null
+    return { member, days: breakdown?.days || [], salarySoFar: breakdown?.basePay ?? null }
+  })
 
   // Compact "today at a glance" strip — replaces the four oversized room-status
   // cards and adds occupancy, the one figure everyone glances at first.
@@ -297,6 +420,54 @@ export default function DashboardPage() {
                     <span className="text-gray-100 font-semibold">{staffName(s.user_id)}</span>
                     <span className="text-gray-400">
                       {s.position} · {s.start_time}–{s.end_time}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Staff attendance + pay glance — month to date */}
+          <div className="bg-gray-900 border border-gray-800 rounded-lg shadow p-6 mb-10">
+            <div className="flex flex-wrap gap-3 justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-white">
+                {canSeeAllStaffStats ? 'Staff Attendance & Pay' : 'My Attendance & Pay'}
+                <span className="text-gray-500 font-normal text-base"> — {thisMonth}, so far</span>
+              </h2>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {ATTENDANCE_LEGEND.map((entry) => (
+                  <span key={entry.key} className="flex items-center gap-1.5 text-xs text-gray-400">
+                    <span
+                      className="inline-block w-2.5 h-2.5 rounded-full"
+                      style={{ backgroundColor: entry.color }}
+                    />
+                    {entry.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {staffStats.length === 0 ? (
+              <p className="text-gray-500 text-sm">No staff members yet.</p>
+            ) : (
+              <ul className="divide-y divide-gray-800">
+                {staffStats.map(({ member, days, salarySoFar }) => (
+                  <li key={member.id} className="flex flex-wrap items-center gap-4 py-3 first:pt-0 last:pb-0">
+                    <span className="text-gray-100 font-semibold w-32 shrink-0 truncate">
+                      {member.name}
+                    </span>
+                    <div className="flex-1 min-w-32">
+                      <AttendanceBar days={days} />
+                    </div>
+                    <span className="text-sm text-gray-300 w-28 shrink-0 text-right">
+                      {salarySoFar === null ? (
+                        <span className="text-gray-500">No rate set</span>
+                      ) : (
+                        <>
+                          <span className="text-gray-500">So far </span>
+                          <span className="font-semibold text-gray-100">{currency(salarySoFar)}</span>
+                        </>
+                      )}
                     </span>
                   </li>
                 ))}

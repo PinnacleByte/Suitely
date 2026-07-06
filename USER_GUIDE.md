@@ -17,7 +17,7 @@ Welcome to Suitely! This guide walks you through using each feature of the app.
 - 📅 **Reservations** - Manage guest bookings, folios, guest IDs, and history
 - 🏠 **Rooms** - Manage room inventory
 - 🧹 **Housekeeping** - Cleaning queue + maintenance issues
-- ⚙️ **Settings** - Hub for Items catalog, Invoices, Activity Log, Staff management, and the hotel's **display currency** (admin only)
+- ⚙️ **Settings** - Hub for **Accounts** (P&L, managers/admins), Items catalog, Invoices, Activity Log, **Staff** (members + attendance + leave), **Payroll**, and the hotel's **display currency** (admin only)
 
 Plus two quick-action buttons on the navbar itself: **Check In** and **Check Out**, usable from any page.
 
@@ -42,7 +42,8 @@ The dashboard is a front-desk operations board. Top to bottom:
 - **Today at a glance** - A compact strip of tiles: Occupancy %, Available, Arriving, Departing, To Clean, Maintenance
 - **Arriving Today / Departing Today** - Guests checking in or out today, with their room number, and a **Check in** / **Check out** button right on the list — no need to leave the dashboard
 - **Staff on Shift Today** - Who's scheduled to work today and their position, from the Staff page's schedules
-- **Financials** *(managers & admins only)* - **Revenue This Month** (now folio-inclusive: room price **plus** minibar/surcharges/discounts), **Upcoming Confirmed** revenue, and **Outstanding Balance** (money still owed across active reservations). A staff/receptionist login doesn't see this section.
+- **Staff Attendance & Pay** - A month-to-date glance: each staffer's attendance mix (a small colored bar) and their accrued pay "so far." Managers see everyone; a staff login sees only their own row.
+- **Financials** *(managers & admins only)* - **Revenue This Month** (now folio-inclusive: room price **plus** minibar/surcharges/discounts), **Upcoming Confirmed** revenue, and **Outstanding Balance** (money still owed across active reservations). A staff/receptionist login doesn't see this section. For a full profit & loss, see **Accounts** below.
 
 All the "today" figures use IST (India Standard Time), regardless of what timezone your own device is set to.
 
@@ -60,6 +61,8 @@ Checking a guest in or out opens a short wizard — from **any** of these three 
 - The **Check In** / **Check Out** button on the navbar (works from any page, with a search box to find a specific guest)
 - The **Arriving Today** / **Departing Today** lists on the Dashboard
 - The **Check in** / **Check out** button on a reservation's row in the Reservations table
+
+> **Confirm your identity:** because the front desk usually runs on one shared login, five actions — **booking, check-in, check-out, recording a payment, and issuing an invoice** — first ask the acting staffer to pick their name and enter their **password**. This records *who* actually did it in the audit trail. Enter your own password (not the shared login's) — a wrong password or Cancel simply stops the action.
 
 ### Checking a Guest In
 
@@ -264,6 +267,44 @@ Assign staff members to work shifts.
 
 Schedules appear in a table showing staff name, position, date, and times.
 
+### Attendance (Roll Call + Log)
+
+*(Managers/admins record it; everyone can view.)* On **Settings → Staff**, below the members and schedules:
+- **Today's Roll Call** — every staffer with a one-click **Present / Late / Half-day / Absent** picker. Mark the day and click **Save All**. Doing this daily matters: for fixed-salary staff, a day with **no** attendance record is treated as unpaid when payroll is calculated.
+- **Attendance log** — the full history (date, staff, status, clock in/out, notes) with Edit/Delete for managers.
+
+Because the front desk is a shared terminal, staff **cannot** log their own attendance — only a manager/admin can (so no one can cover for an absent colleague).
+
+### Leave Requests
+
+Also on **Settings → Staff**:
+- **Anyone** can click **+ Request Leave** (type, dates, reason) — you can only request for yourself.
+- **Managers/admins** see **Approve / Reject** (with an optional note) on pending requests, and can delete any.
+- You can **Withdraw** your own request while it's still pending.
+
+## Compensation & Payroll 💰
+
+**Location:** Settings → Payroll *(pay rates and runs; each person sees only their own unless they're a manager/admin)*
+
+- **Set a pay rate** — for each staffer, choose **Fixed** (monthly salary) or **Hourly** and enter the rate. Rates are **append-only**: changing a rate adds a new effective-dated row, it doesn't overwrite history.
+- **New Payroll Run** — pick a staffer and a **calendar month**. The run starts as a **draft** and computes base pay from their rate + that month's attendance (fixed staff: full daily rate for present/late days, half for half-days, docked for absent/unrecorded days unless a manager sets a per-day pay override; hourly: logged hours × rate). Add **bonus/deduction** lines while it's a draft.
+- **Finalize** — freezes the payslip. ⚠ **This is permanent**: after finalizing you can't edit it, later attendance/rate changes won't affect it, and it **can't be deleted** (only *draft* runs can be deleted). So finalize only once the month is over and attendance is complete — finalizing a full month early would lock in a near-empty payslip.
+- **Mark Paid** / **Print** — record that payroll was settled and print the payslip. (This is record-keeping; the app doesn't move money.)
+
+## Accounts / Financials 📈
+
+**Location:** Settings → Accounts *(managers and admins only)*
+
+A real **profit & loss** view for a chosen **week or month** (toggle + ‹ prev / next › navigator):
+
+- **Summary cards** — **Revenue (earned)**, **Expenses**, and **Net Profit/Loss**. Revenue is *accrual*: each stay's full folio (room + charges) counts in the period it starts — the same number as the dashboard's "Revenue This Month" — with cash **received** and **outstanding** shown underneath.
+- **Charts** — a **Revenue vs Expenses** trend over recent periods, plus revenue-by-category and expense-by-category breakdowns.
+- **Revenue detail** — every reservation in the period (guest · room · nights · total).
+- **Expenses** — add/edit/delete operating costs (utilities, supplies, rent, marketing, …) with a category, amount, date, and optional vendor. **Staff payroll is pulled in automatically** from finalized/paid payroll runs — you never re-enter it here.
+- **Statement** — generate a **printable financial statement** (itemized revenue + expenses + net) in your hotel's currency.
+
+> **Note:** what this produces is an **income statement (P&L)** — revenue minus expenses over a period — not a full assets/liabilities balance sheet (the app doesn't track assets). To see a payroll expense appear here, a payroll run must be **finalized** (see Payroll above).
+
 ---
 
 ## Data Input Tips 💡
@@ -384,12 +425,13 @@ Schedules appear in a table showing staff name, position, date, and times.
 
 **Raised, not yet built:**
 - Guest profiles / repeat-guest recognition
-- Occupancy/ADR/RevPAR reporting on the dashboard (revenue + outstanding balance exist)
+- Occupancy/ADR/RevPAR reporting (revenue, outstanding balance, and a P&L exist; no ADR/RevPAR)
 - A visual room/date availability chart
 - Self-service password reset
-- Configurable tax rate on invoices
+- Configurable tax rate on invoices/statements
+- Editing or deleting a finalized payslip (immutable by design today)
 
-*(Recently shipped: reservation search/filter, **role enforcement**, billing (payments + invoices), per-org currency, live data sync, installable PWA.)*
+*(Recently shipped: **advanced staff management** (attendance, leave, payroll), the **Accounts / P&L** section, **shared-terminal identity confirmation**, role enforcement, billing (payments + invoices), per-org currency, live data sync, installable PWA.)*
 
 **Phase 3+ Features:**
 - Guest self-service booking
@@ -400,5 +442,5 @@ Schedules appear in a table showing staff name, position, date, and times.
 
 ---
 
-**Version:** 4.0 (Billing, Role-based access, Realtime, PWA)
+**Version:** 5.0 (Staff management + Payroll, Accounts/P&L, Identity confirmation, Billing, Realtime, PWA)
 **Last Updated:** 2026-07-05

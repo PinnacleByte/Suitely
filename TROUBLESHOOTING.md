@@ -20,11 +20,11 @@ These three cost the most debugging time — check them before anything else.
 
 **Symptom:** You edit code, restart the dev server, hard-refresh… and the browser *still* runs the old version. Nothing you change appears. Feels like your edits aren't saving.
 
-**Cause:** The app ships a **PWA service worker** (`public/sw.js`) that caches `/_next/static/` chunks *cache-first*. That's correct in production (hashed URLs) but in **dev** the chunk URLs are stable, so the service worker keeps serving stale compiled code — surviving dev-server restarts, `.next` deletion, and hard refreshes.
+**Cause:** The app ships a **PWA service worker** (`public/sw.js`) that caches `/_next/static/` chunks *cache-first*. That's correct in production (hashed URLs) but in **dev** the chunk URLs are stable, so a previously-installed worker could keep serving stale compiled code — surviving dev-server restarts, `.next` deletion, and hard refreshes.
 
-**Fix (one time):** DevTools (F12) → **Application** tab → **Clear site data** → reload. That unregisters the service worker and wipes its caches. (Alternatively Application → Service Workers → **Unregister**.)
+**Fixed permanently:** `public/sw.js` now **self-destructs on localhost** — it does no caching in dev and, on activation, purges all caches, unregisters itself, and reloads open tabs. Because the browser byte-compares `/sw.js` on every navigation (independent of page JS), a **plain reload now heals it**, even if a stale worker was already installed. (Production still gets the normal PWA caching on its real hostname.)
 
-**Prevented going forward:** the service worker is now registered **only in production** (`components/ServiceWorkerRegister.tsx`); in dev it unregisters itself. But an already-installed one must be cleared by hand once, because it's serving the old registration code too.
+**Only if a very old pre-self-destruct worker is somehow stuck:** DevTools (F12) → **Application → Clear site data** → reload, once. Otherwise you shouldn't need this anymore. Using an InPrivate/Incognito window also sidesteps it entirely.
 
 ### 🥈 "Changes don't sync to other tabs/screens without a reload" — Realtime not fully enabled
 
@@ -172,6 +172,12 @@ Next.js only reads `.env.local` when the server starts — editing the file whil
 4. If it still fails, check the terminal running `npm run dev` for the actual error (the browser error is often generic)
 
 ---
+
+### "Invalid session" / "Session expired" when confirming identity (check-in/out, payment, invoice, booking)
+
+**Cause:** These five actions post to `/api/confirm-identity`, which validates the shared session's token server-side. Historically the client sent the `AuthContext` React snapshot token, which can lag the auth client's real (auto-refreshed) token — so after ~1 hour the JWT went stale and the server returned 401. **Fixed:** the client now pulls a freshly-refreshed token via `getFreshAccessToken()` (`lib/supabase.ts`) at call time.
+
+**If you still see it after the fix:** your login genuinely expired and couldn't refresh — **log out and back in**, then retry. (If you're in dev and the fix "isn't running," it's the stale service worker above — reload, or use an InPrivate window.)
 
 ### Forgot the admin or staff password
 
@@ -406,11 +412,13 @@ If a specific statement genuinely errors, copy the exact message and share it �
 
 ### "column ... does not exist" / "relation ... does not exist" / "function ... does not exist"
 
-**Examples:** `reservations.guest_count`, `reservation_charges`, `payments`, `invoices`, `current_user_role`, `mark_room_clean`.
+**Examples:** `reservations.guest_count`, `reservation_charges`, `payments`, `invoices`, `current_user_role`, `mark_room_clean`, `attendance_logs`, `leave_requests`, `staff_compensation`, `payroll_runs`, `expenses`.
 
 **Cause:** Your Supabase project is on an older schema than the current `database.sql`.
 
 **Solution:** Since the file is now self-contained and re-runnable, just **re-run the whole `database.sql`** in the SQL Editor. ⚠ This resets all app data (see [Database Issues](#sql-query-fails-when-run-in-supabase)). After re-running, re-enable the Realtime **Publications** (they're lost when tables are dropped).
+
+**On a live database you *don't* want to reset:** run only the standalone additive migration for the missing feature from `migrations/` instead — e.g. `relation "expenses" does not exist` on `/dashboard/accounts` means you haven't run `migrations/accounts.sql` yet (then enable Realtime on `expenses`). These migrations are non-destructive.
 
 ---
 
@@ -531,4 +539,4 @@ If a specific statement genuinely errors, copy the exact message and share it �
 ---
 
 **Last Updated:** 2026-07-05
-**Version:** 4.0 (role-based RLS, billing, realtime, PWA)
+**Version:** 5.0 (staff management + payroll, Accounts/P&L, identity confirmation, self-healing dev SW)

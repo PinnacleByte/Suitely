@@ -3,13 +3,30 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { motion } from 'framer-motion'
-import { ShoppingBag, History, Users, FileText } from 'lucide-react'
+import { ShoppingBag, History, Users, FileText, Wallet, Calculator } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/lib/AuthContext'
 import { CURRENCIES, CurrencyCode, DEFAULT_CURRENCY, getCurrencyCode } from '@/lib/currency'
 
-const SETTINGS_LINKS: { href: string; icon: LucideIcon; title: string; description: string }[] = [
+// `managerOnly` links only render for admin/manager (RLS also blocks the
+// page's reads for staff — the gate here is UX, hiding a card that would 403).
+type SettingsLink = {
+  href: string
+  icon: LucideIcon
+  title: string
+  description: string
+  managerOnly?: boolean
+}
+
+const SETTINGS_LINKS: SettingsLink[] = [
+  {
+    href: '/dashboard/accounts',
+    icon: Calculator,
+    title: 'Accounts',
+    description: 'Revenue, expenses, and profit & loss — weekly/monthly stats and printable statements. Managers only.',
+    managerOnly: true,
+  },
   {
     href: '/dashboard/items',
     icon: ShoppingBag,
@@ -32,7 +49,13 @@ const SETTINGS_LINKS: { href: string; icon: LucideIcon; title: string; descripti
     href: '/dashboard/staff',
     icon: Users,
     title: 'Staff',
-    description: 'Manage staff accounts and shift schedules.',
+    description: 'Manage staff accounts, shift schedules, attendance, and leave requests.',
+  },
+  {
+    href: '/dashboard/payroll',
+    icon: Wallet,
+    title: 'Payroll',
+    description: 'Set pay rates and run payroll — everyone sees only their own, managers see all.',
   },
 ]
 
@@ -125,6 +148,8 @@ export default function SettingsPage() {
   // Org settings (currency) are admin-only (RLS-enforced). Non-admins still
   // reach this hub for the links below, just without the currency control.
   const isAdmin = profile?.role === 'admin'
+  const canManage = profile?.role === 'admin' || profile?.role === 'manager'
+  const links = SETTINGS_LINKS.filter((l) => !l.managerOnly || canManage)
 
   return (
     <main className="max-w-5xl mx-auto px-4 py-12">
@@ -134,7 +159,7 @@ export default function SettingsPage() {
       {isAdmin && <CurrencySetting />}
 
       <div className="grid md:grid-cols-3 gap-6">
-        {SETTINGS_LINKS.map((link, i) => (
+        {links.map((link, i) => (
           <motion.div
             key={link.href}
             initial={{ opacity: 0, y: 12 }}

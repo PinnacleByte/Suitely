@@ -13,12 +13,14 @@ Manage reservations, check-in/check-out, housekeeping, guest folios, and staff s
 - **💱 Per-Org Currency** - Each hotel picks its own display currency; a single `formatMoney` helper formats every price
 - **🧹 Housekeeping & Maintenance** - A cleaning queue for turning rooms around after checkout, and a maintenance issue tracker that automatically takes a room out of service and hands it back
 - **🏠 Room Management** - Track room types (incl. per-night extra-guest fees), availability, and status
-- **👥 Staff Management** - Add, **edit, and delete** team members and work schedules; real per-member logins
+- **👥 Staff Management** - Add/**edit/delete** team members and shift schedules (real per-member logins), plus **attendance** (daily roll call + log), **leave requests** (staff self-request, manager approve/reject), and **compensation & payroll** (append-only pay rates, draft→finalized→paid runs with immutable payslip snapshots and print)
+- **📈 Accounts / Financials** *(managers/admins)* - A real **profit & loss** section (`/dashboard/accounts`): categorized revenue (accrual, matching the dashboard) and expenses (operating costs + auto-derived payroll), net profit/loss, **weekly/monthly charts**, and a **printable financial statement**
 - **🔐 Real Auth + Role-Based Access** - Supabase Auth logins for hotel admins and staff, with **DB-enforced (RLS) roles**: admin / manager / staff each get a different write scope
+- **🕵️ Shared-Terminal Accountability** - On a shared front-desk login, booking / check-in / check-out / payment / invoice each require the acting staffer to confirm their **password**, attributing the action to the real person in the audit trail
 - **📜 Rich Audit Trail** - Every reservation, folio-charge, and payment change is logged with a human-readable description (who, what, when) — survives even after the record is deleted, with a calendar-based date filter
 - **⚡ Live Data Sync** - Supabase Realtime keeps every open page/tab current — a booking or check-in made on one screen shows up on the others without a reload
-- **📱 Installable PWA** - Add-to-home-screen support with an offline fallback (service worker)
-- **📊 Dashboard** - Front-desk operations board: occupancy glance strip, actionable arrivals/departures, staff on shift, and a manager-only financials section (folio-inclusive revenue + outstanding balance)
+- **📱 Installable PWA** - Add-to-home-screen support with an offline fallback (service worker; caching is production-only, self-disabling on localhost)
+- **📊 Dashboard** - Front-desk operations board: occupancy glance strip, actionable arrivals/departures, staff on shift, a staff attendance & pay glance, and a manager-only financials section (folio-inclusive revenue + outstanding balance)
 - **🔒 Multi-Tenant** - Support multiple hotels with one codebase, isolated via Row-Level Security
 - **🌙 Dark Mode** - Dark theme throughout, with subtle animations and a styled confirm/alert dialog
 
@@ -93,11 +95,14 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 │   │   ├── housekeeping/          # Cleaning queue + maintenance tracker
 │   │   ├── items/                 # Priced items catalog
 │   │   ├── invoices/              # Issued-invoice list (search + status filter)
-│   │   ├── settings/              # Hub: Items/Invoices/Activity Log/Staff + currency
-│   │   └── staff/
+│   │   ├── accounts/              # Accounts / P&L (revenue, expenses, charts, statement)
+│   │   ├── payroll/               # Compensation rates + payroll runs
+│   │   ├── settings/              # Hub: Accounts/Items/Invoices/Activity Log/Staff/Payroll + currency
+│   │   └── staff/                 # Staff + schedules + attendance + leave requests
 │   ├── login/                     # Shared login (admin + staff)
 │   ├── setup/                     # Initial setup wizard (env-flag gated)
 │   ├── api/staff/create/          # Service-role staff provisioning
+│   ├── api/confirm-identity/      # Shared-terminal password verification + attribution
 │   └── page.tsx                   # Landing page
 ├── components/                   # Reusable React components
 │   ├── DashboardNav.tsx           # Top navigation bar
@@ -110,18 +115,24 @@ Visit [http://localhost:3000](http://localhost:3000), then go to `/setup` to cre
 │   ├── ActivityCalendar.tsx       # Month-grid activity date filter
 │   └── ServiceWorkerRegister.tsx  # PWA service worker (production only)
 ├── lib/
-│   ├── supabase.ts                # Browser database client
+│   ├── supabase.ts                # Browser client + getFreshAccessToken()
 │   ├── supabaseAdmin.ts           # Server-only service-role client
 │   ├── AuthContext.tsx            # Session/profile context (+ localStorage mirror)
 │   ├── ConfirmDialog.tsx          # Promise-based confirm/alert dialog
+│   ├── IdentityConfirm.tsx        # Shared-terminal identity gate (password confirm)
 │   ├── useRealtimeRefresh.ts      # Supabase Realtime refetch hook
 │   ├── currency.ts                # Per-org currency + formatMoney
+│   ├── accounts.ts                # P&L math (revenue/expense/statement/trend)
+│   ├── payroll.ts                 # Pay-computation formula (shared)
 │   ├── printInvoice.ts            # Snapshot-driven invoice print
+│   ├── printPayslip.ts            # Snapshot-driven payslip print
+│   ├── printStatement.ts          # On-demand P&L statement print
 │   ├── formatDate.ts              # IST timestamp formatting
 │   └── types.ts                   # TypeScript definitions
 ├── database.sql                  # Full schema (clean, re-runnable, role-based RLS)
+├── migrations/                   # Standalone additive migrations for a live DB
 └── public/
-    ├── sw.js                      # PWA service worker
+    ├── sw.js                      # PWA service worker (self-destructs on localhost)
     └── ...                        # Static assets
 ```
 
@@ -175,13 +186,25 @@ Creating this reservation while signed in is automatically recorded in the audit
 - ✅ Live data sync (Supabase Realtime)
 - ✅ Installable PWA
 - ✅ **Role-based permission enforcement (RLS)** — admin / manager / staff
+- ✅ **Shared-terminal identity confirmation** on the 5 accountable actions
+
+### Advanced Staff Management ✅ (Complete)
+- ✅ Attendance (daily roll call + log)
+- ✅ Leave requests (staff self-request; manager approve/reject)
+- ✅ Compensation & payroll (append-only rates, draft→finalized→paid runs, immutable payslips)
+
+### Accounts / Financials ✅ (Complete)
+- ✅ `expenses` table + P&L page (`/dashboard/accounts`, managers/admins)
+- ✅ Accrual revenue + cash-received/outstanding; auto-derived payroll expense
+- ✅ Weekly/monthly charts + printable financial statement
 
 ### Still Raised (not yet built)
 - [ ] Guest profiles / repeat-guest recognition
-- [ ] Occupancy/ADR/RevPAR reporting (revenue + outstanding balance exist; no ADR/RevPAR)
+- [ ] Occupancy/ADR/RevPAR reporting (revenue, outstanding balance, and a P&L exist; no ADR/RevPAR)
 - [ ] Visual room/date availability chart ("tape chart")
 - [ ] Password-reset / forgot-password flow
 - [ ] Configurable tax rate (billing Phase C — slot reserved on invoices)
+- [ ] Edit/delete a finalized payslip (immutable by design today — deferred)
 
 ### Phase 3 (Future)
 - [ ] Guest self-service booking
@@ -224,8 +247,14 @@ Creating this reservation while signed in is automatically recorded in the audit
 | `invoices` | Immutable issued invoices (frozen snapshot, void-not-delete) |
 | `invoice_counters` | Per-(org, month) sequence backing race-safe invoice numbers |
 | `items` | Staff-managed priced catalog for quick folio charges |
-| `audit_logs` | Create/update/delete trail (reservations + folio charges + payments) |
+| `audit_logs` | Create/update/delete + identity-confirm trail (reservations, folio, payments, staff) |
 | `staff_schedules` | Work shifts |
+| `attendance_logs` | Daily attendance (present/absent/late/half-day/on-leave; manager-write) |
+| `leave_requests` | Staff leave requests (self-request; manager approve/reject) |
+| `staff_compensation` | Append-only pay-rate history (reads restricted to self + manager) |
+| `payroll_runs` | Payroll runs, draft→finalized→paid, immutable snapshot (reads restricted) |
+| `payroll_run_adjustments` | Bonus/deduction lines on a draft run |
+| `expenses` | Operating expenses for the Accounts P&L (reads restricted to manager/admin) |
 | `maintenance_logs` | Maintenance tracking |
 
 All tables include Row-Level Security scoped to the authenticated user's organization. Writes are additionally **role-scoped** (admin / manager / staff) — reads stay open to any org member. See [CLAUDE.md](CLAUDE.md#multi-tenancy-model) for the full permission matrix.

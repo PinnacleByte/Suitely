@@ -15,11 +15,20 @@
 -- ROLE MODEL (enforced by RLS, not just the UI):
 --   • Reads: any authenticated org member can SELECT any table in their org.
 --   • staff  : book/edit/delete reservations, folio charges, guests,
---              payments, issue invoices, and housekeeping ops (maintenance
---              issues + mark-clean via the mark_room_clean() RPC).
+--              payments, issue invoices, housekeeping ops (maintenance
+--              issues + mark-clean via the mark_room_clean() RPC), and
+--              submitting/withdrawing their OWN leave requests.
 --   • manager: everything staff can, PLUS rooms/room-types config, staff
---              accounts + schedules, and voiding invoices.
+--              accounts + schedules + attendance, voiding invoices,
+--              approving/rejecting any leave request, and setting pay
+--              rates / running payroll (staff_compensation, payroll_runs).
 --   • admin  : everything, PLUS the items catalog and org settings (currency).
+--
+-- READ EXCEPTION: staff_compensation, payroll_runs, and payroll_run_adjustments
+-- are NOT org-wide readable like every other table — a staffer can only see
+-- their OWN rate/payslips (or admin/manager can see everyone's). This also
+-- means their audit_logs entries (entity_type = 'payroll_run') are read-
+-- restricted the same way — see the split audit_logs SELECT policies below.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
@@ -33,6 +42,11 @@ DROP TABLE IF EXISTS items CASCADE;
 DROP TABLE IF EXISTS reservation_charges CASCADE;
 DROP TABLE IF EXISTS audit_logs CASCADE;
 DROP TABLE IF EXISTS maintenance_logs CASCADE;
+DROP TABLE IF EXISTS payroll_run_adjustments CASCADE;
+DROP TABLE IF EXISTS payroll_runs CASCADE;
+DROP TABLE IF EXISTS staff_compensation CASCADE;
+DROP TABLE IF EXISTS leave_requests CASCADE;
+DROP TABLE IF EXISTS attendance_logs CASCADE;
 DROP TABLE IF EXISTS staff_schedules CASCADE;
 DROP TABLE IF EXISTS reservations CASCADE;
 DROP TABLE IF EXISTS rooms CASCADE;
@@ -119,6 +133,97 @@ CREATE TABLE staff_schedules (
   position TEXT NOT NULL,
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Daily attendance, one row per (org, staffer, day). Manager/admin-only
+-- write (see role model above) — staff cannot log or edit their own
+-- attendance, since the shared-terminal model means a self-write is a
+-- falsification risk. pay_override drives payroll docking (see Phase C of
+-- STAFF_MANAGEMENT_PLAN.md): NULL follows the default rule for `status`,
+-- 'paid' forces full pay for the day (e.g. manager allows a paid leave day
+-- or backfills a day nobody logged), 'unpaid' forces docking even if
+-- present.
+CREATE TABLE attendance_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  log_date DATE NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'late', 'half_day', 'on_leave')),
+  clock_in TIME,
+  clock_out TIME,
+  pay_override TEXT CHECK (pay_override IN ('paid', 'unpaid')),
+  notes TEXT,
+  recorded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (org_id, user_id, log_date)
+);
+
+-- Leave/time-off requests. Staff can insert their OWN request (locked to
+-- status='pending' by the INSERT policy below, so nobody can self-approve
+-- by inserting with a different status) and withdraw it by deleting while
+-- still pending; only manager/admin can approve/reject (UPDATE) or delete
+-- any row. No 'cancelled' status — withdrawing is a delete, same "correct
+-- by remove" discipline as reservation_charges/payments.
+CREATE TABLE leave_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  leave_type TEXT NOT NULL DEFAULT 'other', -- annual | sick | casual | unpaid | other (UI option list, not enum)
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  reason TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at TIMESTAMPTZ,
+  review_note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Staff pay rate, append-only like reservation_charges/payments: a rate
+-- change is a NEW row with its own effective_from, never an UPDATE of
+-- history. "Current" rate = the latest row with effective_from <= today.
+CREATE TABLE staff_compensation (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pay_type TEXT NOT NULL CHECK (pay_type IN ('hourly', 'fixed')),
+  rate DECIMAL(10, 2) NOT NULL,
+  effective_from DATE NOT NULL DEFAULT CURRENT_DATE,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A payroll run for one staffer over one period. base_pay is computed
+-- client-side at generation time from staff_compensation + attendance_logs
+-- (see STAFF_MANAGEMENT_PLAN.md §6's pay formula) and snapshot is frozen at
+-- finalize time — same immutability guarantee as invoices.snapshot.
+CREATE TABLE payroll_runs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  base_pay DECIMAL(10, 2) NOT NULL,
+  adjustments_total DECIMAL(10, 2) NOT NULL DEFAULT 0,
+  gross_pay DECIMAL(10, 2) NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'finalized', 'paid')),
+  snapshot JSONB,
+  finalized_at TIMESTAMPTZ,
+  paid_at TIMESTAMPTZ,
+  payment_method TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Itemized bonus/deduction lines on a draft run, additive on top of
+-- base_pay — same shape as reservation_charges (positive/negative amount,
+-- add/remove only).
+CREATE TABLE payroll_run_adjustments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  payroll_run_id UUID NOT NULL REFERENCES payroll_runs(id) ON DELETE CASCADE,
+  description TEXT NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Maintenance issues (housekeeping tracker).
@@ -236,6 +341,12 @@ CREATE INDEX idx_reservations_org_id ON reservations(org_id);
 CREATE INDEX idx_reservations_room_id ON reservations(room_id);
 CREATE INDEX idx_staff_schedules_org_id ON staff_schedules(org_id);
 CREATE INDEX idx_staff_schedules_user_id ON staff_schedules(user_id);
+CREATE INDEX idx_attendance_logs_org_user ON attendance_logs(org_id, user_id);
+CREATE INDEX idx_attendance_logs_org_date ON attendance_logs(org_id, log_date);
+CREATE INDEX idx_leave_requests_org_user ON leave_requests(org_id, user_id);
+CREATE INDEX idx_staff_compensation_org_user ON staff_compensation(org_id, user_id);
+CREATE INDEX idx_payroll_runs_org_user ON payroll_runs(org_id, user_id);
+CREATE INDEX idx_payroll_run_adjustments_org_run ON payroll_run_adjustments(org_id, payroll_run_id);
 CREATE INDEX idx_maintenance_logs_org_id ON maintenance_logs(org_id);
 CREATE INDEX idx_maintenance_logs_room_id ON maintenance_logs(room_id);
 CREATE INDEX idx_audit_logs_org_entity ON audit_logs(org_id, entity_type, entity_id);
@@ -259,6 +370,11 @@ ALTER TABLE room_types REPLICA IDENTITY FULL;
 ALTER TABLE reservation_charges REPLICA IDENTITY FULL;
 ALTER TABLE payments REPLICA IDENTITY FULL;
 ALTER TABLE staff_schedules REPLICA IDENTITY FULL;
+ALTER TABLE attendance_logs REPLICA IDENTITY FULL;
+ALTER TABLE leave_requests REPLICA IDENTITY FULL;
+ALTER TABLE staff_compensation REPLICA IDENTITY FULL;
+ALTER TABLE payroll_runs REPLICA IDENTITY FULL;
+ALTER TABLE payroll_run_adjustments REPLICA IDENTITY FULL;
 ALTER TABLE users REPLICA IDENTITY FULL;
 ALTER TABLE maintenance_logs REPLICA IDENTITY FULL;
 ALTER TABLE items REPLICA IDENTITY FULL;
@@ -291,6 +407,11 @@ ALTER TABLE room_types ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rooms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE staff_schedules ENABLE ROW LEVEL SECURITY;
+ALTER TABLE attendance_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE leave_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE staff_compensation ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payroll_run_adjustments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE maintenance_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservation_charges ENABLE ROW LEVEL SECURITY;
@@ -372,6 +493,87 @@ CREATE POLICY "Managers can update schedules" ON staff_schedules
 CREATE POLICY "Managers can delete schedules" ON staff_schedules
   FOR DELETE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
 
+-- --- attendance_logs (staff management: manager + admin write only) ----
+-- Reads stay org-wide (like staff_schedules) — attendance status is less
+-- sensitive than pay and visibility helps shift coverage. Staff cannot
+-- write at all (see role model comment at top of file).
+CREATE POLICY "Org members can view attendance" ON attendance_logs
+  FOR SELECT USING (org_id = current_org_id());
+CREATE POLICY "Managers can insert attendance" ON attendance_logs
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can update attendance" ON attendance_logs
+  FOR UPDATE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'))
+  WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can delete attendance" ON attendance_logs
+  FOR DELETE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+
+-- --- leave_requests (self-request; manager+admin decide) ---------------
+-- Reads org-wide (like schedules/attendance — coverage visibility). Any
+-- org member can INSERT their OWN request, locked to status='pending' so
+-- nobody (including admin/manager) can insert a pre-approved row. Only
+-- manager/admin can UPDATE (approve/reject). DELETE is the requester
+-- withdrawing their own still-pending request, or manager/admin cleanup.
+CREATE POLICY "Org members can view leave requests" ON leave_requests
+  FOR SELECT USING (org_id = current_org_id());
+CREATE POLICY "Staff can request their own leave" ON leave_requests
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND user_id = auth.uid() AND status = 'pending');
+CREATE POLICY "Managers can decide on leave" ON leave_requests
+  FOR UPDATE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'))
+  WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Withdraw own pending or manager cleanup" ON leave_requests
+  FOR DELETE USING (
+    org_id = current_org_id() AND (
+      (user_id = auth.uid() AND status = 'pending')
+      OR current_user_role() IN ('admin', 'manager')
+    )
+  );
+
+-- --- staff_compensation (pay rates: manager+admin write; SELF-OR-MANAGER
+-- read — the first deliberate exception to "reads are org-wide" in this
+-- app, since salary is per-person sensitive). Append-only: no UPDATE policy
+-- at all — correct a rate by inserting a new effective-dated row.
+CREATE POLICY "Self or managers can view compensation" ON staff_compensation
+  FOR SELECT USING (
+    org_id = current_org_id() AND (user_id = auth.uid() OR current_user_role() IN ('admin', 'manager'))
+  );
+CREATE POLICY "Managers can set compensation" ON staff_compensation
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can delete compensation" ON staff_compensation
+  FOR DELETE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+
+-- --- payroll_runs (manager+admin write; self-or-manager read, same
+-- sensitivity exception as staff_compensation) --------------------------
+CREATE POLICY "Self or managers can view payroll runs" ON payroll_runs
+  FOR SELECT USING (
+    org_id = current_org_id() AND (user_id = auth.uid() OR current_user_role() IN ('admin', 'manager'))
+  );
+CREATE POLICY "Managers can insert payroll runs" ON payroll_runs
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can update payroll runs" ON payroll_runs
+  FOR UPDATE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'))
+  WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+-- Delete is DRAFT-ONLY — once finalized/paid a run is immutable like an
+-- invoice (correct via adjustments, not deletion), but nothing is locked
+-- in yet at 'draft', so cleaning up a mistaken/duplicate generation is safe.
+CREATE POLICY "Managers can delete draft payroll runs" ON payroll_runs
+  FOR DELETE USING (
+    org_id = current_org_id() AND current_user_role() IN ('admin', 'manager') AND status = 'draft'
+  );
+
+-- --- payroll_run_adjustments (itemized bonus/deduction lines on a draft
+-- run; same read restriction, joined through the parent run) -----------
+CREATE POLICY "Self or managers can view payroll adjustments" ON payroll_run_adjustments
+  FOR SELECT USING (
+    org_id = current_org_id() AND EXISTS (
+      SELECT 1 FROM payroll_runs pr WHERE pr.id = payroll_run_id
+        AND (pr.user_id = auth.uid() OR current_user_role() IN ('admin', 'manager'))
+    )
+  );
+CREATE POLICY "Managers can add payroll adjustments" ON payroll_run_adjustments
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can remove payroll adjustments" ON payroll_run_adjustments
+  FOR DELETE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+
 -- --- maintenance_logs (housekeeping ops: all org members incl. staff) --
 CREATE POLICY "Org members can view maintenance" ON maintenance_logs
   FOR SELECT USING (org_id = current_org_id());
@@ -383,8 +585,22 @@ CREATE POLICY "Org members can delete maintenance" ON maintenance_logs
   FOR DELETE USING (org_id = current_org_id());
 
 -- --- audit_logs (read-only to clients; written only by definer triggers) --
-CREATE POLICY "Org members can view audit logs" ON audit_logs
-  FOR SELECT USING (org_id = current_org_id());
+-- Split in two (2026-07-05, Phase C): payroll_run entries carry gross
+-- pay/adjustments in their snapshot, so they must NOT be org-wide readable
+-- like every other entity_type — that would leak salary data around the
+-- staff_compensation/payroll_runs read restriction above via this table.
+-- Postgres OR's multiple permissive policies together, so the base policy
+-- explicitly excludes 'payroll_run' and a second policy re-admits it only
+-- for the run's own staffer or an admin/manager.
+CREATE POLICY "Org members can view non-sensitive audit logs" ON audit_logs
+  FOR SELECT USING (org_id = current_org_id() AND entity_type <> 'payroll_run');
+CREATE POLICY "Self or managers can view payroll audit logs" ON audit_logs
+  FOR SELECT USING (
+    org_id = current_org_id() AND entity_type = 'payroll_run' AND (
+      current_user_role() IN ('admin', 'manager')
+      OR EXISTS (SELECT 1 FROM payroll_runs pr WHERE pr.id = audit_logs.entity_id AND pr.user_id = auth.uid())
+    )
+  );
 
 -- --- reservation_charges (folio: all org members; add/remove only) --
 CREATE POLICY "Org members can view reservation charges" ON reservation_charges
@@ -596,6 +812,143 @@ CREATE TRIGGER trg_payments_audit
 AFTER INSERT OR DELETE ON payments
 FOR EACH ROW EXECUTE FUNCTION log_payment_audit();
 
+-- Attendance audit — logged against the attendance row's own id (no
+-- reservation to interleave with; surfaced in Staff's own history list).
+CREATE OR REPLACE FUNCTION log_attendance_audit() RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_name TEXT;
+  v_staff_name TEXT;
+  v_summary TEXT;
+BEGIN
+  SELECT name INTO v_actor_name FROM users WHERE id = auth.uid();
+
+  IF TG_OP = 'DELETE' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = OLD.user_id;
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (OLD.org_id, 'attendance', OLD.id, 'delete', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(OLD),
+      'Attendance Record Removed', COALESCE(v_staff_name, 'Unknown') || ' — ' || to_char(OLD.log_date, 'Mon DD, YYYY'));
+    RETURN OLD;
+  ELSIF TG_OP = 'INSERT' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    CASE NEW.status
+      WHEN 'present' THEN v_summary := 'Marked Present';
+      WHEN 'absent' THEN v_summary := 'Marked Absent';
+      WHEN 'late' THEN v_summary := 'Marked Late';
+      WHEN 'half_day' THEN v_summary := 'Marked Half-Day';
+      ELSE v_summary := 'Marked On Leave';
+    END CASE;
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'attendance', NEW.id, 'create', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      v_summary, COALESCE(v_staff_name, 'Unknown') || ' — ' || to_char(NEW.log_date, 'Mon DD, YYYY'));
+    RETURN NEW;
+  ELSE -- UPDATE
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'attendance', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      'Attendance Corrected', COALESCE(v_staff_name, 'Unknown') || ' — ' || to_char(NEW.log_date, 'Mon DD, YYYY'));
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_attendance_audit
+AFTER INSERT OR UPDATE OR DELETE ON attendance_logs
+FOR EACH ROW EXECUTE FUNCTION log_attendance_audit();
+
+-- Leave request audit — logged against the request's own id.
+CREATE OR REPLACE FUNCTION log_leave_request_audit() RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_name TEXT;
+  v_staff_name TEXT;
+  v_date_range TEXT;
+BEGIN
+  SELECT name INTO v_actor_name FROM users WHERE id = auth.uid();
+
+  IF TG_OP = 'DELETE' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = OLD.user_id;
+    v_date_range := to_char(OLD.start_date, 'Mon DD') || ' - ' || to_char(OLD.end_date, 'Mon DD');
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (OLD.org_id, 'leave_request', OLD.id, 'delete', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(OLD),
+      CASE WHEN OLD.status = 'pending' THEN 'Leave Request Withdrawn' ELSE 'Leave Request Removed' END,
+      COALESCE(v_staff_name, 'Unknown') || ' — ' || v_date_range);
+    RETURN OLD;
+
+  ELSIF TG_OP = 'INSERT' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    v_date_range := to_char(NEW.start_date, 'Mon DD') || ' - ' || to_char(NEW.end_date, 'Mon DD');
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'leave_request', NEW.id, 'create', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      'Leave Requested', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_date_range || ' (' || NEW.leave_type || ')');
+    RETURN NEW;
+
+  ELSE -- UPDATE (decision)
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    v_date_range := to_char(NEW.start_date, 'Mon DD') || ' - ' || to_char(NEW.end_date, 'Mon DD');
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'leave_request', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      CASE WHEN NEW.status = 'approved' THEN 'Leave Approved' WHEN NEW.status = 'rejected' THEN 'Leave Rejected' ELSE 'Leave Request Updated' END,
+      COALESCE(v_staff_name, 'Unknown') || ' — ' || v_date_range || COALESCE(' — ' || NEW.review_note, ''));
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_leave_requests_audit
+AFTER INSERT OR UPDATE OR DELETE ON leave_requests
+FOR EACH ROW EXECUTE FUNCTION log_leave_request_audit();
+
+-- Payroll run audit — logged against the run's own id. Read access to
+-- these specific rows is restricted (see the split audit_logs SELECT
+-- policies above) since the snapshot/amounts are salary data.
+CREATE OR REPLACE FUNCTION log_payroll_run_audit() RETURNS TRIGGER AS $$
+DECLARE
+  v_actor_name TEXT;
+  v_staff_name TEXT;
+  v_period TEXT;
+BEGIN
+  SELECT name INTO v_actor_name FROM users WHERE id = auth.uid();
+
+  IF TG_OP = 'DELETE' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = OLD.user_id;
+    v_period := to_char(OLD.period_start, 'Mon DD') || ' - ' || to_char(OLD.period_end, 'Mon DD, YYYY');
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (OLD.org_id, 'payroll_run', OLD.id, 'delete', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(OLD),
+      'Payroll Run Deleted', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_period);
+    RETURN OLD;
+
+  ELSIF TG_OP = 'INSERT' THEN
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    v_period := to_char(NEW.period_start, 'Mon DD') || ' - ' || to_char(NEW.period_end, 'Mon DD, YYYY');
+    INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+    VALUES (NEW.org_id, 'payroll_run', NEW.id, 'create', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+      'Payroll Run Created', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_period);
+    RETURN NEW;
+
+  ELSE -- UPDATE
+    SELECT name INTO v_staff_name FROM users WHERE id = NEW.user_id;
+    v_period := to_char(NEW.period_start, 'Mon DD') || ' - ' || to_char(NEW.period_end, 'Mon DD, YYYY');
+    IF NEW.status IS DISTINCT FROM OLD.status AND NEW.status = 'finalized' THEN
+      INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+      VALUES (NEW.org_id, 'payroll_run', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+        'Payroll Finalized', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_period);
+    ELSIF NEW.status IS DISTINCT FROM OLD.status AND NEW.status = 'paid' THEN
+      INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+      VALUES (NEW.org_id, 'payroll_run', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+        'Payroll Marked Paid', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_period);
+    ELSE
+      INSERT INTO audit_logs(org_id, entity_type, entity_id, action, actor_user_id, actor_name, snapshot, summary, details)
+      VALUES (NEW.org_id, 'payroll_run', NEW.id, 'update', auth.uid(), COALESCE(v_actor_name, 'Unknown'), to_jsonb(NEW),
+        'Payroll Run Updated', COALESCE(v_staff_name, 'Unknown') || ' — ' || v_period);
+    END IF;
+    RETURN NEW;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER trg_payroll_runs_audit
+AFTER INSERT OR UPDATE OR DELETE ON payroll_runs
+FOR EACH ROW EXECUTE FUNCTION log_payroll_run_audit();
+
 -- =====================================================================
 -- Triggers: room-status sync (SECURITY DEFINER — update rooms even when
 -- the change is driven by a staff member with no direct rooms write grant)
@@ -694,3 +1047,48 @@ BEGIN
   RETURN 'INV-' || v_period || '-' || lpad(v_seq::text, 4, '0');
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- =====================================================================
+-- Accounts / Financials (operating expenses)
+-- =====================================================================
+-- The expense side of the P&L. Revenue is derived on the fly from existing
+-- reservations + reservation_charges (accrual, by check_in_date), and staff
+-- cost from payroll_runs — so this table holds ONLY operating expenses
+-- (utilities, supplies, rent, marketing, ...), never salaries, which would
+-- double-count payroll. Reads are restricted to admin/manager (financial
+-- data; the whole Accounts section is a manager/owner concern) — the first
+-- read-restricted table outside payroll. No audit trigger (deliberate, like
+-- staff_compensation) so amounts stay off the org-wide audit feed;
+-- recorded_by + created_at cover provenance.
+CREATE TABLE expenses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+  category TEXT NOT NULL CHECK (category IN (
+    'utilities', 'supplies', 'maintenance', 'marketing',
+    'rent', 'food_beverage', 'commissions', 'other'
+  )),
+  description TEXT NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL CHECK (amount >= 0),
+  vendor TEXT,
+  expense_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  payment_method TEXT CHECK (payment_method IN ('cash', 'card', 'upi', 'bank_transfer', 'other')),
+  notes TEXT,
+  recorded_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_expenses_org_date ON expenses(org_id, expense_date);
+ALTER TABLE expenses REPLICA IDENTITY FULL;
+ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
+
+-- Reads AND writes are admin/manager only — unlike most tables, staff can't
+-- read expenses at all (same sensitivity treatment as payroll).
+CREATE POLICY "Managers can view expenses" ON expenses
+  FOR SELECT USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can insert expenses" ON expenses
+  FOR INSERT WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can update expenses" ON expenses
+  FOR UPDATE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'))
+  WITH CHECK (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));
+CREATE POLICY "Managers can delete expenses" ON expenses
+  FOR DELETE USING (org_id = current_org_id() AND current_user_role() IN ('admin', 'manager'));

@@ -1,6 +1,6 @@
 # Advanced Staff Management — Design Plan
 
-> **Status (2026-07-05): All three phases (Attendance, Leave Requests, Compensation & Payroll) BUILT.** Written the same way `BILLING_PLAN.md` was — a phased design record, updated with "✅ BUILT" notes as each phase ships. Phase A + B are deployed to the live database; Phase C's migration is pending deploy — see CLAUDE.md's Outstanding Manual Steps.
+> **Status (2026-07-05): All three phases (Attendance, Leave Requests, Compensation & Payroll) BUILT and DEPLOYED.** Written the same way `BILLING_PLAN.md` was — a phased design record, updated with "✅ BUILT" notes as each phase ships. All three phases are deployed to the live database (via the full `database.sql` re-run), and the follow-up `migrations/payroll_run_delete.sql` fix has also been run — see CLAUDE.md's Outstanding Manual Steps (none remain).
 
 ## 1. Problem statement
 
@@ -20,7 +20,7 @@ Today `/dashboard/staff` covers two things: a staff directory (create/edit/delet
 
 ## 3. Phase A — Attendance ✅ BUILT (2026-07-05)
 
-The highest daily-value, lowest-complexity piece: a manager/admin marks each staffer Present/Absent/Late/Half-day per day, optionally with clock in/out times. Shipped: `attendance_logs` table + RLS (org-wide read, admin/manager-only write) + `log_attendance_audit()` trigger (migration appended to `database.sql`); `AttendanceLog` type; a new "Attendance" section on `/dashboard/staff` with a "Today's Roll Call" quick-mark card plus a full log table (add/edit/delete for admin/manager, read-only for staff). Lives under Settings → Staff — **not** added to the top nav bar. Verified with `npx tsc --noEmit`. **⚠ Pending deploy** — see CLAUDE.md's Outstanding Manual Steps for the non-destructive migration to run against the live database.
+The highest daily-value, lowest-complexity piece: a manager/admin marks each staffer Present/Absent/Late/Half-day per day, optionally with clock in/out times. Shipped: `attendance_logs` table + RLS (org-wide read, admin/manager-only write) + `log_attendance_audit()` trigger (migration appended to `database.sql`); `AttendanceLog` type; a new "Attendance" section on `/dashboard/staff` with a "Today's Roll Call" quick-mark card plus a full log table (add/edit/delete for admin/manager, read-only for staff). Lives under Settings → Staff — **not** added to the top nav bar. Verified with `npx tsc --noEmit`. **✅ Deployed** to the live database (via the full `database.sql` re-run) — see CLAUDE.md's Outstanding Manual Steps.
 
 ### 3.1 Schema
 
@@ -95,7 +95,7 @@ export type AttendanceLog = {
 
 ## 4. Phase B — Leave / Time-off requests ✅ BUILT (2026-07-05)
 
-Staff can request; only admin/manager can decide. Because a *request* isn't an assertion of fact, letting staff create their own doesn't reopen the falsification concern — approval is still gated. Shipped: `leave_requests` table + RLS (self-insert locked to `status='pending'`, manager/admin-only approve/reject, withdraw-own-while-pending or manager/admin delete-any) + `log_leave_request_audit()` trigger (migration appended to `database.sql`); `LeaveRequest` type; a new "Leave Requests" section on `/dashboard/staff` (Settings → Staff only, no nav change) with a "+ Request Leave" form open to everyone and an Approve/Reject/Withdraw/Delete action column gated per-row by ownership + role. Verified with `npx tsc --noEmit`. **⚠ Pending deploy** — see CLAUDE.md's Outstanding Manual Steps for the non-destructive migration.
+Staff can request; only admin/manager can decide. Because a *request* isn't an assertion of fact, letting staff create their own doesn't reopen the falsification concern — approval is still gated. Shipped: `leave_requests` table + RLS (self-insert locked to `status='pending'`, manager/admin-only approve/reject, withdraw-own-while-pending or manager/admin delete-any) + `log_leave_request_audit()` trigger (migration appended to `database.sql`); `LeaveRequest` type; a new "Leave Requests" section on `/dashboard/staff` (Settings → Staff only, no nav change) with a "+ Request Leave" form open to everyone and an Approve/Reject/Withdraw/Delete action column gated per-row by ownership + role. Verified with `npx tsc --noEmit`. **✅ Deployed** to the live database (via the full `database.sql` re-run) — see CLAUDE.md's Outstanding Manual Steps.
 
 ### 4.1 Schema
 
